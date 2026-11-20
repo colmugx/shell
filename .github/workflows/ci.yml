@@ -5,25 +5,25 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build-test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - name: Verify source is materialized
-        id: source
-        shell: bash
-        run: |
-          if test -f CMakeLists.txt && test -f src/session.c; then echo "ready=true" >> "$GITHUB_OUTPUT"; else echo "ready=false" >> "$GITHUB_OUTPUT"; fi
       - name: Configure
-        if: steps.source.outputs.ready == 'true'
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
       - name: Build
-        if: steps.source.outputs.ready == 'true'
         run: cmake --build build --parallel 2
       - name: Native Linux integration test
-        if: steps.source.outputs.ready == 'true'
         run: POCKET_BIN_DIR="$PWD/build" python3 tests/test_runtime.py
-      - name: Block empty build
-        if: steps.source.outputs.ready != 'true'
-        run: echo "Source not yet materialized" >&2; exit 1
+      - name: Headless image smoke test
+        run: |
+          ./build/pocket-session --headless --frames 2 --screenshot /tmp/pokshell.ppm
+          test -s /tmp/pokshell.ppm
