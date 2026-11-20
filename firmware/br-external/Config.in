@@ -1,0 +1,1 @@
+source "$BR2_EXTERNAL_POKSHELL_PATH/package/pocket-console/Config.in"

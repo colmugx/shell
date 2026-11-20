@@ -1,0 +1,14 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+case "$1" in
+ start)
+  /usr/bin/pocket-session --game-bin /usr/bin/pocket-game >/var/log/pocket-session.log 2>&1 &
+  echo $! >/run/pocket-session.pid
+  ;;
+ stop)
+  if test -r /run/pocket-session.pid; then kill "$(cat /run/pocket-session.pid)" 2>/dev/null || :; fi
+  rm -f /run/pocket-session.pid
+  ;;
+ restart) "$0" stop; "$0" start ;;
+ *) echo "usage: $0 {start|stop|restart}"; exit 2 ;;
+esac

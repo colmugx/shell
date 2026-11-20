@@ -1,0 +1,5 @@
+config BR2_PACKAGE_POCKET_CONSOLE
+ bool "pokshell native console alpha"
+ help
+  Native Linux fbdev prototype. Requires /dev/fb0 and
+  does not contain PocketJS, WAMR or a DRM compositor.
