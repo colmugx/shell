@@ -13,7 +13,7 @@ Evidence is tracked per implementation, per machine and per hardware reference.
 | UTM Wayland graphical session | No direct VM test evidence | Unverified |
 | Actual game overlay during arbitrary fullscreen SDL/GLES game | Headless CI verifies weston-simple-shm XDG render elements, visible/transparent Layer SHM commits and unchanged game PID; fullscreen SDL/GLES and UTM remain untested | Native SHM coexistence verified in headless CI; fullscreen/GLES/UTM unverified |
 | MoonBit/WAMR component execution | Not linked | Not implemented |
-| Production console UI, controller focus, dual screen | Not present | Not implemented |
+| Production console UI, controller focus, dual screen | Nested pointer hit testing and click-to-focus implemented; optional panel click-to-close (manual UTM unverified). No gamepad/touch, production UI or dual-screen policy | Partial input implementation; full interaction pending |
 | H700, Duo Lite, RP6 physical-device boot / suspend / hardware acceleration | No test reports | Unverified |
 
 **CI tests validate native Linux user-space code; they are not evidence of a bootable firmware or actual GPU output.**
