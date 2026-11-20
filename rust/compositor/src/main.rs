@@ -5,12 +5,14 @@
 //! example; see THIRD_PARTY_NOTICES.md. No DRM/KMS or layer-shell support yet.
 
 use std::error::Error;
+use std::os::unix::io::OwnedFd;
 use std::sync::Arc;
 use std::time::Instant;
 
 use smithay::{
+    delegate_compositor, delegate_data_device, delegate_seat, delegate_shm, delegate_xdg_shell,
     backend::{
-        input::{InputEvent, InputTime, KeyboardKeyEvent},
+        input::{InputEvent, KeyboardKeyEvent},
         renderer::{
             element::{surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement}, Kind},
             gles::GlesRenderer,
@@ -28,8 +30,7 @@ use smithay::{
             with_surface_tree_downward, CompositorClientState, CompositorHandler,
             CompositorState, SurfaceAttributes, TraversalAction,
         },
-        pointer_constraints::PointerConstraintsHandler,
-        selection::{data_device::{DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler}, SelectionHandler},
+        selection::{data_device::{ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler}, SelectionHandler},
         shell::xdg::{PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState},
         shm::{ShmHandler, ShmState},
     },
@@ -40,7 +41,7 @@ use wayland_server::{
     protocol::{wl_buffer, wl_surface::{self, WlSurface}},
     Client, ListeningSocket,
 };
-use winit::event_loop::pump_events::PumpStatus;
+use winit::platform::pump_events::PumpStatus;
 
 const HELP: &str = "pokcomp [--socket NAME]\n\
     Starts a nested Wayland compositor in a host Wayland/X11 window.\n\
@@ -120,9 +121,12 @@ impl SelectionHandler for PokCompositor {
     type SelectionUserData = ();
 }
 impl DataDeviceHandler for PokCompositor {
-    fn data_device_state(&mut self) -> &mut DataDeviceState { &mut self.data_device_state }
+    fn data_device_state(&self) -> &DataDeviceState { &self.data_device_state }
 }
-impl WaylandDndGrabHandler for PokCompositor {}
+impl ClientDndGrabHandler for PokCompositor {}
+impl ServerDndGrabHandler for PokCompositor {
+    fn send(&mut self, _mime_type: String, _fd: OwnedFd, _seat: Seat<Self>) {}
+}
 
 impl SeatHandler for PokCompositor {
     type KeyboardFocus = WlSurface;
@@ -134,7 +138,6 @@ impl SeatHandler for PokCompositor {
     fn focus_changed(&mut self, _seat: &Seat<Self>, _focused: Option<&WlSurface>) {}
     fn cursor_image(&mut self, _seat: &Seat<Self>, _image: smithay::input::pointer::CursorImageStatus) {}
 }
-impl PointerConstraintsHandler for PokCompositor {}
 
 #[derive(Default)]
 struct ClientState {
@@ -183,7 +186,7 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
         Some(name) => ListeningSocket::bind(name)?,
         None => ListeningSocket::bind_auto("pokshell", 1..128)?,
     };
-    let socket_name = listener.socket_name().to_string_lossy().into_owned();
+    let socket_name = listener.socket_name().expect("named listener").to_string_lossy().into_owned();
     println!("WAYLAND_DISPLAY={socket_name}");
     eprintln!("pokcomp: nested compositor listening on {socket_name}");
     let start = Instant::now();
@@ -196,7 +199,7 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
                     event.key_code(),
                     event.state(),
                     0.into(),
-                    InputTime::now(),
+                    0,
                     |_, _, _| FilterResult::Forward,
                 );
             }
@@ -268,7 +271,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     run(options)
 }
 
-smithay::delegate_dispatch2!(PokCompositor);
+delegate_xdg_shell!(PokCompositor);
+delegate_compositor!(PokCompositor);
+delegate_shm!(PokCompositor);
+delegate_seat!(PokCompositor);
+delegate_data_device!(PokCompositor);
 
 #[cfg(test)]
 mod tests {
