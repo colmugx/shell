@@ -13,7 +13,7 @@ use smithay::{
     delegate_compositor, delegate_data_device, delegate_output, delegate_seat, delegate_shm, delegate_xdg_shell,
     delegate_layer_shell,
     backend::{
-        input::{InputEvent, KeyboardKeyEvent},
+        input::{AbsolutePositionEvent, ButtonState, Event, InputEvent, KeyboardKeyEvent, PointerButtonEvent},
         renderer::{
             element::{surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement}, Kind},
             gles::GlesRenderer,
@@ -22,10 +22,15 @@ use smithay::{
         },
         winit::{self, WinitEvent},
     },
-    input::{keyboard::FilterResult, Seat, SeatHandler, SeatState},
+    desktop::{utils::under_from_surface_tree, WindowSurfaceType},
+    input::{
+        keyboard::FilterResult,
+        pointer::{ButtonEvent, MotionEvent},
+        Seat, SeatHandler, SeatState,
+    },
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::wayland_server::{protocol::wl_seat, Display},
-    utils::{Rectangle, Serial, Transform},
+    utils::{Logical, Point, Rectangle, Serial, Transform, SERIAL_COUNTER},
     wayland::{
         buffer::BufferHandler,
         output::{OutputHandler, OutputManagerState},
@@ -54,7 +59,7 @@ const DIAGNOSTIC_LAYER_WIDTH: i32 = 320;
 const HELP: &str = "pokcomp [--socket NAME]\n\
     Starts a nested Wayland compositor in a host Wayland/X11 window.\n\
     The server prints its WAYLAND_DISPLAY value on stdout.\n\
-    Does not start games or implement DRM/KMS, layer-shell or pointer focus.";
+    Does not start games or implement DRM/KMS or gamepad/touch input.";
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Options {
@@ -91,6 +96,34 @@ struct PokCompositor {
     seat_state: SeatState<Self>,
     data_device_state: DataDeviceState,
     seat: Seat<Self>,
+    pointer_position: Point<f64, Logical>,
+}
+
+impl PokCompositor {
+    /// Hit testing uses the surfaces' *actual input regions*. In particular,
+    /// the diagnostic overlay has an empty input region and is click-through.
+    fn surface_under(
+        &self,
+        point: Point<f64, Logical>,
+        output_size: smithay::utils::Size<i32, smithay::utils::Physical>,
+    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        let x = (output_size.w - DIAGNOSTIC_LAYER_WIDTH).max(0);
+        for layer in self.layer_shell_state.layer_surfaces().filter(|layer| layer.alive()).rev() {
+            if let Some((surface, origin)) = under_from_surface_tree(
+                layer.wl_surface(), point, (x, 0), WindowSurfaceType::ALL,
+            ) {
+                return Some((surface, origin.to_f64()));
+            }
+        }
+        for game in self.xdg_shell_state.toplevel_surfaces().iter().rev() {
+            if let Some((surface, origin)) = under_from_surface_tree(
+                game.wl_surface(), point, (0, 0), WindowSurfaceType::ALL,
+            ) {
+                return Some((surface, origin.to_f64()));
+            }
+        }
+        None
+    }
 }
 
 impl BufferHandler for PokCompositor {
@@ -176,7 +209,9 @@ impl SeatHandler for PokCompositor {
 
     fn seat_state(&mut self) -> &mut SeatState<Self> { &mut self.seat_state }
 
-    fn focus_changed(&mut self, _seat: &Seat<Self>, _focused: Option<&WlSurface>) {}
+    fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&WlSurface>) {
+        eprintln!("pokcomp: keyboard focus {}", if focused.is_some() { "surface" } else { "none" });
+    }
     fn cursor_image(&mut self, _seat: &Seat<Self>, _image: smithay::input::pointer::CursorImageStatus) {}
 }
 
@@ -237,8 +272,10 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
         data_device_state: DataDeviceState::new::<PokCompositor>(&dh),
         seat_state,
         seat,
+        pointer_position: (0.0, 0.0).into(),
     };
     let keyboard = state.seat.add_keyboard(Default::default(), 200, 200)?;
+    let pointer = state.seat.add_pointer();
 
     // Use Wayland's lockfile mechanism. Never unlink someone else's socket.
     let listener = match options.socket_name {
@@ -253,6 +290,7 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
     let mut seen_layer_frame = false;
 
     loop {
+        let host_size = backend.window_size();
         let status = host.dispatch_new_events(|event| match event {
             WinitEvent::Resized { size, .. } => {
                 let mode = Mode { size, refresh: 60_000 };
@@ -270,18 +308,35 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
                     &mut state,
                     event.key_code(),
                     event.state(),
-                    0.into(),
-                    0,
+                    SERIAL_COUNTER.next_serial(),
+                    event.time_msec(),
                     |_, _, _| FilterResult::Forward,
                 );
             }
-            WinitEvent::Input(InputEvent::PointerMotionAbsolute { .. }) => {
-                // Temporary keyboard-only focus policy. Real hit testing,
-                // pointer/gamepad/touch routing and overlays are later gates.
-                if let Some(surface) = state.xdg_shell_state.toplevel_surfaces().last() {
-                    let surface = surface.wl_surface().clone();
-                    keyboard.set_focus(&mut state, Some(surface), 0.into());
+            WinitEvent::Input(InputEvent::PointerMotionAbsolute { event, .. }) => {
+                let pos = event.position_transformed(host_size.to_logical(1));
+                state.pointer_position = pos;
+                let hit = state.surface_under(pos, host_size);
+                pointer.motion(&mut state, hit, &MotionEvent {
+                    location: pos,
+                    serial: SERIAL_COUNTER.next_serial(),
+                    time: event.time_msec(),
+                });
+                pointer.frame(&mut state);
+            }
+            WinitEvent::Input(InputEvent::PointerButton { event, .. }) => {
+                let serial = SERIAL_COUNTER.next_serial();
+                if event.state() == ButtonState::Pressed && !pointer.is_grabbed() {
+                    let hit = state.surface_under(state.pointer_position, host_size);
+                    keyboard.set_focus(&mut state, hit.map(|(surface, _)| surface), serial);
                 }
+                pointer.button(&mut state, &ButtonEvent {
+                    button: event.button_code(),
+                    state: event.state(),
+                    serial,
+                    time: event.time_msec(),
+                });
+                pointer.frame(&mut state);
             }
             _ => {}
         });
