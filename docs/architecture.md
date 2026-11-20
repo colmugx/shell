@@ -11,7 +11,7 @@ session/seat management, Mesa, DRM/KMS, input and audio
     |
 Rust: pokshelld + game lifecycle / IPC             [started]
     |
-Rust: DRM/KMS + Wayland compositor                 [planned]
+Rust: nested Smithay Wayland server                 [experimental]\n    |\nRust: DRM/KMS native-session backend                 [planned]
      +-- native ARM64 Linux game process
      +-- independent system overlay surface
      +-- gamepad/touch focus and multi-screen policy

@@ -8,7 +8,7 @@ Evidence is tracked per implementation, per machine and per hardware reference.
 | Rust process supervision, termination grace, event subscription, fragmented IPC | `rust/` unit/integration tests; Actions run 44695342191 | CI passed on x86-64 / ARM64 |
 | Rust user session in Debian ARM64 / UTM | No local UTM boot log | Unverified |
 | Bootable Buildroot QEMU image | No QEMU boot log | Unverified |
-| Own DRM/KMS and Wayland compositor | Not present (external Sway used for transport testing) | Not implemented |
+| Own DRM/KMS and Wayland compositor | Experimental nested Smithay XDG Wayland server source; no UTM run evidence, no DRM/KMS backend | Source added; runtime unverified |
 | Wayland layer-shell diagnostic surface | Rust wl_shm + zwlr_layer_shell_v1 client; Actions 44704676668, x86-64 headless Sway protocol test | Compiled on x86-64 / ARM64; headless protocol handshake passed |
 | UTM Wayland graphical session | No direct VM test evidence | Unverified |
 | Actual game overlay during arbitrary fullscreen SDL/GLES game | Only Rust overlay state, or legacy framebuffer demonstration | Not implemented |

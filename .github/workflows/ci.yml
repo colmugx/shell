@@ -67,3 +67,27 @@ jobs:
       - name: Wayland layer-shell protocol smoke test
         if: matrix.runner == 'ubuntu-24.04'
         run: python3 tests/headless_wayland.py
+
+
+  smithay-nested-compositor:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: rust/compositor
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install EGL and Wayland build prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends pkg-config libwayland-dev libegl1-mesa-dev libgles2-mesa-dev libxkbcommon-dev
+      - name: Build nested Smithay compositor
+        run: cargo build
+      - name: Test command-line argument validation
+        run: cargo test
+      - name: Help works without a graphical session
+        run: ./target/debug/pokcomp --help
