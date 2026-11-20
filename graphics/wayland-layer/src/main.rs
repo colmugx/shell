@@ -14,7 +14,7 @@ use std::time::Duration;
 use wayland_client::{
     delegate_noop,
     globals::{registry_queue_init, GlobalListContents},
-    protocol::{wl_buffer, wl_compositor, wl_region, wl_registry, wl_shm, wl_shm_pool, wl_surface},
+    protocol::{wl_buffer, wl_compositor, wl_pointer, wl_region, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface},
     Connection, Dispatch, QueueHandle,
 };
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
@@ -83,6 +83,11 @@ fn paint(width: i32, height: i32, visible: bool) -> Vec<u8> {
 struct App {
     surface: wl_surface::WlSurface,
     layer: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+    compositor: wl_compositor::WlCompositor,
+    _seat: Option<wl_seat::WlSeat>,
+    pointer: Option<wl_pointer::WlPointer>,
+    interactive: bool,
+    control_socket: PathBuf,
     shm: wl_shm::WlShm,
     pool: Option<wl_shm_pool::WlShmPool>,
     empty: Option<wl_buffer::WlBuffer>,
@@ -125,8 +130,20 @@ impl App {
         Ok(())
     }
 
-    fn show(&mut self, visible: bool) {
+    fn show(&mut self, visible: bool, qh: &QueueHandle<Self>) {
         if !self.configured || self.drawn == Some(visible) { return; }
+
+        // Hidden layers never intercept input. An interactive visible layer
+        // has its own Wayland pointer region; the old diagnostic mode remains
+        // click-through even while displayed.
+        let region = self.compositor.create_region(
+            qh, (),
+        );
+        if visible && self.interactive {
+            region.add(0, 0, self.width, self.height);
+        }
+        self.surface.set_input_region(Some(&region));
+        region.destroy();
         let buffer = if visible { &self.panel } else { &self.empty };
         if let Some(buffer) = buffer {
             self.surface.attach(Some(buffer), 0, 0);
@@ -150,6 +167,41 @@ delegate_noop!(App: wl_shm_pool::WlShmPool);
 delegate_noop!(App: ignore wl_buffer::WlBuffer);
 delegate_noop!(App: wl_region::WlRegion);
 delegate_noop!(App: zwlr_layer_shell_v1::ZwlrLayerShellV1);
+
+impl Dispatch<wl_seat::WlSeat, ()> for App {
+    fn event(state: &mut Self, seat: &wl_seat::WlSeat, event: wl_seat::Event,
+        _: &(), _: &Connection, qh: &QueueHandle<Self>) {
+        if let wl_seat::Event::Capabilities { capabilities } = event {
+            if capabilities.into_result().map(|caps| caps.contains(wl_seat::Capability::Pointer))
+                == Ok(true) && state.pointer.is_none()
+            {
+                state.pointer = Some(seat.get_pointer(qh, ()));
+            }
+        }
+    }
+}
+
+impl Dispatch<wl_pointer::WlPointer, ()> for App {
+    fn event(state: &mut Self, _: &wl_pointer::WlPointer, event: wl_pointer::Event,
+        _: &(), _: &Connection, _: &QueueHandle<Self>) {
+        if let wl_pointer::Event::Button {
+            button: 0x110, state: wayland_client::WEnum::Value(wl_pointer::ButtonState::Pressed), ..
+        } = event {
+            if state.interactive && state.drawn == Some(true) {
+                // Single-item diagnostic menu: click closes the overlay.
+                // Games remain untouched: pokshelld owns their lifecycle.
+                let result = UnixStream::connect(&state.control_socket).and_then(|mut sock| {
+                    sock.set_write_timeout(Some(Duration::from_secs(1)))?;
+                    sock.write_all(b"OVERLAY CLOSE\n")
+                });
+                match result {
+                    Ok(()) => eprintln!("pokshell-layer interactive close requested"),
+                    Err(err) => eprintln!("pokshell-layer interactive close failed: {err}"),
+                }
+            }
+        }
+    }
+}
 
 impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for App {
     fn event(state: &mut Self, proxy: &zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
@@ -176,13 +228,15 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for App {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut socket = default_socket();
     let mut force_visible = false;
+    let mut interactive = false;
     let mut args = env::args_os().skip(1);
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--socket") => socket = PathBuf::from(args.next().ok_or("--socket needs a value")?),
             Some("--show") => force_visible = true,
+            Some("--interactive") => interactive = true,
             Some("--help") => {
-                println!("pokshell-layer [--socket PATH] [--show]\nRequires Wayland compositor with wlr-layer-shell-v1");
+                println!("pokshell-layer [--socket PATH] [--show] [--interactive]\nRequires Wayland compositor with wlr-layer-shell-v1");
                 return Ok(());
             }
             _ => return Err(format!("unknown argument: {}", arg.to_string_lossy()).into()),
@@ -198,6 +252,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shm: wl_shm::WlShm = globals.bind(&qh, 1..=1, ())?;
     let layer_shell: zwlr_layer_shell_v1::ZwlrLayerShellV1 = globals.bind(&qh, 1..=4, ())
         .map_err(|_| "Wayland compositor does not advertise wlr-layer-shell-v1")?;
+    let seat = if interactive {
+        Some(globals.bind::<wl_seat::WlSeat, _, _>(&qh, 1..=8, ())?)
+    } else {
+        None
+    };
     let surface = compositor.create_surface(&qh, ());
     // Diagnostic overlay must not steal controller/mouse/keyboard input.
     let empty_region = compositor.create_region(&qh, ());
@@ -213,12 +272,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     surface.commit(); // No buffer until first Configure.
 
     let mut app = App {
-        surface, layer, shm, pool: None, empty: None, panel: None, backing: None,
+        surface, layer, compositor, _seat: seat, pointer: None, interactive, control_socket: socket,
+        shm, pool: None, empty: None, panel: None, backing: None,
         configured: false, closed: false, width: PANEL_WIDTH, height: 720, drawn: None,
     };
     while !app.closed {
         queue.roundtrip(&mut app)?;
-        app.show(visible.load(Ordering::Acquire));
+        app.show(visible.load(Ordering::Acquire), &qh);
         thread::sleep(Duration::from_millis(50));
     }
     // Compositor or layer-shell closed our surface; free all resources.
