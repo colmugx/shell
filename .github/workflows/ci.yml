@@ -59,3 +59,11 @@ jobs:
         run: cargo test
       - name: CLI help
         run: ./target/debug/pokshell-layer --help
+      - name: Install headless wlroots compositor
+        if: matrix.runner == 'ubuntu-24.04'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends sway
+      - name: Wayland layer-shell protocol smoke test
+        if: matrix.runner == 'ubuntu-24.04'
+        run: python3 tests/headless_wayland.py
