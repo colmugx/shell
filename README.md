@@ -23,7 +23,7 @@ Read [Linux-first strategy and language choices](docs/boot-and-languages.md) and
 - `pokctl`: command-line control client, including live `WATCH` event stream
 - unit tests and Linux IPC/process integration tests
 
-**This is not yet a compositor.** Opening an overlay changes control-plane state only; it does not display one. No PocketJS host, MoonBit runtime or WAMR worker is currently linked.
+**This is not yet a compositor.** The Rust control plane changes overlay state. A separate, experimental Wayland layer client can display a diagnostic surface under an existing wlroots compositor; it is not the finished shell. No PocketJS host, MoonBit runtime or WAMR worker is currently linked.
 
 ```sh
 cd rust
@@ -41,6 +41,10 @@ cargo run --bin pokctl -- QUIT
 ```
 
 Watch state changes in a third terminal with `cargo run --bin pokctl -- WATCH`. The event stream includes game started/exited and overlay open/closed. It is an in-memory live feed, not a durable event log.\n\nGitHub Actions exercises Rust and C baselines on x86-64 and native ARM64 Linux runners.
+
+## Experimental native Wayland overlay transport
+
+The standalone Rust client at [`graphics/wayland-layer`](graphics/wayland-layer) creates an independent wl_shm Layer Surface using the wlroots `zwlr_layer_shell_v1` protocol. It watches `pokshelld WATCH` for overlay state and switches between transparent/diagnostic buffers without taking input focus. This is a **Wayland protocol and layering experiment**, not a polished UI, full-screen game compositor or hardware firmware. It has compiled on Linux x86-64 / ARM64 and passed a **headless Sway layer-configure smoke test**, but a visible UTM game/overlay integration test is still pending. [Build and UTM test instructions](docs/wayland-transport.md).
 
 ## Historical C framebuffer experiment
 

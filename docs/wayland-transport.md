@@ -71,7 +71,7 @@ Use `cargo run -- --show` in the graphics directory for a temporary **forced vis
 
 - `cargo test` and `cargo build`: check Wayland transport, format and event handling compile for x86-64 and native AArch64.
 - **Not yet verified**: actual visible overlay above a running GLES game on UTM; no screenshot/test log has been supplied from a real compositor.
-- Future CI should start a headless wlroots compositor and assert layer mapping, protocol/errors, output pixels, and no game interruption.
+- GitHub Actions run 44704676668 started a headless Sway/wlroots compositor and verified that the layer client receives a real Configure event and remains running. **This does not verify pixels, input, GPU composition or game coexistence.** Future testing should add pixel/frame capture and independently running SDL/GLES game.
 - Next architectural gate: own Rust Smithay-backed compositor and independent game/overlay surface management (not this temporary Wayland client under Sway).
 
 ## Source and license
