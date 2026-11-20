@@ -1,10 +1,39 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Native Linux game-session lifecycle, independent of displays and UI toolkits.
-//! This crate deliberately contains no graphics compositor.
+//! Game-first native Linux session control plane.
+//!
+//! This is process supervision and an event model, NOT a graphics compositor.
 use std::ffi::OsString;
 use std::io;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
+
+const SIGTERM: i32 = 15;
+const SIGKILL: i32 = 9;
+const STOP_GRACE: Duration = Duration::from_millis(750);
+
+/// The sole raw Linux ABI boundary in the core. Games are launched in their
+/// own process group; never signal the caller's or compositor's process group.
+mod unix_signal {
+    use std::io;
+
+    unsafe extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+
+    pub fn group(pgid: u32, signal: i32) -> io::Result<()> {
+        let pgid: i32 = pgid.try_into().map_err(|_| io::Error::other("pid out of range"))?;
+        // SAFETY: pid is a positive PID returned by spawn after process_group(0).
+        // A negative pid targets that *child's* process group, not this process.
+        if unsafe { kill(-pgid, signal) } == -1 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct GameConfig {
@@ -17,89 +46,177 @@ pub struct Snapshot {
     pub running_pid: Option<u32>,
     pub overlay_open: bool,
     pub last_exit: Option<i32>,
+    pub last_signal: Option<i32>,
 }
 
 impl Snapshot {
+    /// Preserve old fields so previous pokctl scripts keep working.
     pub fn to_wire(&self) -> String {
         let mode = if self.running_pid.is_some() { "game" } else { "home" };
         let pid = self.running_pid.map(|p| p.to_string()).unwrap_or_else(|| "none".into());
         let exit = self.last_exit.map(|e| e.to_string()).unwrap_or_else(|| "none".into());
-        format!("mode={mode} overlay={} pid={pid} last_exit={exit}\n", u8::from(self.overlay_open))
+        let signal = self.last_signal.map(|s| s.to_string()).unwrap_or_else(|| "none".into());
+        format!("mode={mode} overlay={} pid={pid} last_exit={exit} last_signal={signal}\n",
+            u8::from(self.overlay_open))
     }
 }
 
-/// Owns only children it spawned. Commands never accept arbitrary shell strings
-/// or operating-system PIDs. A future compositor can watch the same state.
+/// Typed events support a native UI, a component host, and eventual compositor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionEvent {
+    GameStarted { pid: u32 },
+    GameExited { pid: u32, code: Option<i32>, signal: Option<i32> },
+    OverlayChanged { open: bool },
+}
+
+impl SessionEvent {
+    pub fn to_wire(&self, seq: u64) -> String {
+        match self {
+            Self::GameStarted { pid } => format!("EVENT seq={seq} type=game_started pid={pid}\n"),
+            Self::GameExited { pid, code, signal } => format!(
+                "EVENT seq={seq} type=game_exited pid={pid} code={} signal={}\n",
+                code.map(|x| x.to_string()).unwrap_or_else(|| "none".into()),
+                signal.map(|x| x.to_string()).unwrap_or_else(|| "none".into())),
+            Self::OverlayChanged { open } => format!(
+                "EVENT seq={seq} type=overlay_changed open={}\n", u8::from(*open)),
+        }
+    }
+}
+
+/// Owns only a game it created, never an arbitrary system PID. The state
+/// machine stays independent of Wayland, fbdev, MoonBit and WAMR.
 pub struct Supervisor {
     game_config: Option<GameConfig>,
     game: Option<Child>,
     overlay_open: bool,
     last_exit: Option<i32>,
+    last_signal: Option<i32>,
+    pending: Vec<SessionEvent>,
 }
 
 impl Supervisor {
     pub fn new(game_config: Option<GameConfig>) -> Self {
-        Self { game_config, game: None, overlay_open: false, last_exit: None }
+        Self { game_config, game: None, overlay_open: false,
+            last_exit: None, last_signal: None, pending: Vec::new() }
     }
 
-    /// Reap completed children before reporting state.
-    pub fn snapshot(&mut self) -> io::Result<Snapshot> {
-        let finished = match self.game.as_mut() {
+    fn set_overlay(&mut self, open: bool) {
+        if self.overlay_open != open {
+            self.overlay_open = open;
+            self.pending.push(SessionEvent::OverlayChanged { open });
+        }
+    }
+
+    fn finished(&mut self, status: ExitStatus) {
+        if let Some(child) = self.game.take() {
+            self.set_overlay(false);
+            self.last_exit = status.code();
+            self.last_signal = status.signal();
+            self.pending.push(SessionEvent::GameExited {
+                pid: child.id(),
+                code: self.last_exit,
+                signal: self.last_signal,
+            });
+        }
+    }
+
+    fn poll(&mut self) -> io::Result<()> {
+        let status = match self.game.as_mut() {
             Some(child) => child.try_wait()?,
             None => None,
         };
-        if let Some(status) = finished {
-            self.game.take();
-            self.overlay_open = false;
-            self.last_exit = status.code();
+        if let Some(status) = status {
+            self.finished(status);
         }
+        Ok(())
+    }
+
+    /// Poll every frame/event-loop tick, not just when someone requests STATUS.
+    pub fn snapshot(&mut self) -> io::Result<Snapshot> {
+        self.poll()?;
         Ok(Snapshot {
             running_pid: self.game.as_ref().map(Child::id),
             overlay_open: self.overlay_open,
             last_exit: self.last_exit,
+            last_signal: self.last_signal,
         })
     }
 
     pub fn start(&mut self) -> io::Result<u32> {
         if let Some(pid) = self.snapshot()?.running_pid {
-            return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("game already running: {pid}")));
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists,
+                format!("game already running: {pid}")));
         }
-        let config = self.game_config.as_ref().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "no native game configured (--game PATH)")
-        })?;
-        let child = Command::new(&config.program)
-            .args(&config.args)
+        let config = self.game_config.as_ref().ok_or_else(|| io::Error::new(
+            io::ErrorKind::NotFound, "no game configured (--game PATH)"))?;
+        let mut command = Command::new(&config.program);
+        command.args(&config.args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()?;
+            .stderr(Stdio::inherit());
+        command.process_group(0); // Safe std API, available since Rust 1.64.
+        let child = command.spawn()?;
         let pid = child.id();
         self.game = Some(child);
-        self.overlay_open = false;
         self.last_exit = None;
+        self.last_signal = None;
+        self.set_overlay(false);
+        self.pending.push(SessionEvent::GameStarted { pid });
         Ok(pid)
     }
 
+    /// SIGTERM whole child process group, wait, then SIGKILL after deadline.
+    /// A process that exits voluntarily still gets a GameExited event.
     pub fn stop(&mut self) -> io::Result<()> {
-        if let Some(mut child) = self.game.take() {
-            // The v0.1 implementation uses Child::kill (SIGKILL on Linux).
-            // A SIGTERM -> timeout -> SIGKILL policy belongs in the next iteration.
-            if child.try_wait()?.is_none() {
-                child.kill()?;
+        self.poll()?;
+        if let Some(pid) = self.game.as_ref().map(Child::id) {
+            if let Err(err) = unix_signal::group(pid, SIGTERM) {
+                // ESRCH means the group exited between try_wait and signal.
+                if err.raw_os_error() != Some(3) {
+                    return Err(err);
+                }
             }
-            let status = child.wait()?;
-            self.last_exit = status.code();
+            let until = Instant::now() + STOP_GRACE;
+            loop {
+                self.poll()?;
+                if self.game.is_none() {
+                    break;
+                }
+                if Instant::now() >= until {
+                    // Even if the leader ignores SIGTERM, all its descendants
+                    // receive SIGKILL through the isolated process group.
+                    if let Err(err) = unix_signal::group(pid, SIGKILL) {
+                        if err.raw_os_error() != Some(3) {
+                            return Err(err);
+                        }
+                    }
+                    if let Some(mut child) = self.game.take() {
+                        let status = child.wait()?;
+                        self.game = Some(child);
+                        self.finished(status);
+                    }
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
         }
-        self.overlay_open = false;
+        self.set_overlay(false);
         Ok(())
     }
 
     pub fn overlay(&mut self, open: bool) -> io::Result<()> {
         if open && self.snapshot()?.running_pid.is_none() {
-            return Err(io::Error::new(io::ErrorKind::NotFound, "cannot open overlay without a running game"));
+            return Err(io::Error::new(io::ErrorKind::NotFound,
+                "cannot open overlay without a running game"));
         }
-        self.overlay_open = open;
+        self.set_overlay(open);
         Ok(())
+    }
+
+    /// The event queue is drained by the server after each command and tick.
+    /// It is not a persistent replay log.
+    pub fn take_events(&mut self) -> Vec<SessionEvent> {
+        std::mem::take(&mut self.pending)
     }
 
     pub fn execute(&mut self, raw: &str) -> String {
@@ -125,7 +242,7 @@ impl Drop for Supervisor {
     }
 }
 
-/// UI policy is capability-based. Device names only appear in the baseline docs.
+/// UI policy is capability-based, not bound to H700/QCS6125/SM8550 names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceCapabilities {
     pub memory_budget_mib: u32,
@@ -137,56 +254,63 @@ pub struct DeviceCapabilities {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
-    fn cannot_launch_without_a_configured_game() {
+    fn no_arbitrary_execution_or_overlay_without_game() {
         let mut service = Supervisor::new(None);
         assert!(service.execute("GAME START").starts_with("ERROR "));
         assert!(service.execute("OVERLAY OPEN").starts_with("ERROR "));
+        assert!(service.execute("GAME START; /bin/sh").starts_with("ERROR "));
         assert_eq!(service.execute("PING"), "PONG\n");
         assert!(service.execute("STATUS").contains("mode=home"));
+        assert!(service.take_events().is_empty());
     }
 
     #[test]
-    fn rejects_unrecognized_commands() {
-        let mut service = Supervisor::new(None);
-        assert!(service.execute("START /bin/sh").starts_with("ERROR "));
-        assert!(service.execute("GAME START; rm -rf /").starts_with("ERROR "));
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn child_lifecycle_and_overlay_are_independent() {
-        let config = GameConfig {
-            program: PathBuf::from("/bin/sleep"),
-            args: vec!["60".into()],
-        };
-        let mut service = Supervisor::new(Some(config));
-        assert!(service.execute("GAME START").starts_with("OK "));
-        assert!(service.execute("STATUS").contains("mode=game"));
-        assert_eq!(service.execute("OVERLAY OPEN"), "OK OVERLAY OPEN\n");
-        assert!(service.execute("STATUS").contains("overlay=1"));
-        assert_eq!(service.execute("OVERLAY CLOSE"), "OK OVERLAY CLOSED\n");
-        assert_eq!(service.execute("GAME STOP"), "OK GAME STOP\n");
-        assert!(service.execute("STATUS").contains("mode=home"));
+    fn event_wire_protocol_is_stable() {
+        assert_eq!(SessionEvent::GameStarted {pid: 12}.to_wire(1),
+            "EVENT seq=1 type=game_started pid=12\n");
+        assert_eq!(SessionEvent::OverlayChanged {open: true}.to_wire(2),
+            "EVENT seq=2 type=overlay_changed open=1\n");
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn exited_child_is_reaped_and_overlay_resets() {
-        let config = GameConfig {
-            program: PathBuf::from("/bin/true"),
-            args: vec![],
-        };
-        let mut service = Supervisor::new(Some(config));
-        service.start().expect("spawn /bin/true");
+    fn lifecycle_events_and_signal_exit() {
+        let mut service = Supervisor::new(Some(GameConfig {
+            program: PathBuf::from("/bin/sleep"), args: vec!["120".into()],
+        }));
+        let pid = service.start().unwrap();
+        assert_eq!(service.take_events(), vec![SessionEvent::GameStarted {pid}]);
+        service.overlay(true).unwrap();
+        assert_eq!(service.take_events(), vec![SessionEvent::OverlayChanged {open:true}]);
+        service.stop().unwrap();
+        let events = service.take_events();
+        assert!(events.contains(&SessionEvent::OverlayChanged {open:false}));
+        assert!(events.iter().any(|e| matches!(e, SessionEvent::GameExited {pid: p, ..} if *p == pid)));
+        let status = service.snapshot().unwrap();
+        assert!(status.running_pid.is_none());
+        assert_eq!(status.last_signal, Some(SIGTERM));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn spontaneous_exit_is_reaped_and_reported() {
+        let mut service = Supervisor::new(Some(GameConfig {
+            program: PathBuf::from("/bin/false"), args: vec![],
+        }));
+        let pid = service.start().unwrap();
+        service.take_events();
         for _ in 0..100 {
-            if service.snapshot().expect("poll status").running_pid.is_none() {
+            if service.snapshot().unwrap().running_pid.is_none() {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(service.snapshot().unwrap().running_pid.is_none());
-        assert_eq!(service.snapshot().unwrap().last_exit, Some(0));
+        assert_eq!(service.snapshot().unwrap().last_exit, Some(1));
+        assert_eq!(service.take_events(), vec![SessionEvent::GameExited {
+            pid, code:Some(1), signal:None,
+        }]);
     }
 }
