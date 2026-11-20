@@ -113,20 +113,29 @@ fn args() -> Result<(PathBuf, Option<GameConfig>), String> {
     let mut socket = default_socket();
     let mut program: Option<PathBuf> = None;
     let mut game_args: Vec<OsString> = Vec::new();
+    let mut game_wayland_display: Option<OsString> = None;
     let mut argv = env::args_os().skip(1);
     while let Some(arg) = argv.next() {
         match arg.to_str() {
             Some("--socket") => socket = PathBuf::from(argv.next().ok_or("--socket needs a path")?),
             Some("--game") => program = Some(PathBuf::from(argv.next().ok_or("--game needs a path")?)),
             Some("--game-arg") => game_args.push(argv.next().ok_or("--game-arg needs a value")?),
+            Some("--game-wayland-display") if game_wayland_display.is_none() => {
+                game_wayland_display = Some(argv.next().ok_or("--game-wayland-display needs a socket name")?);
+            },
             Some("--help") => {
-                println!("pokshelld [--socket PATH] [--game EXECUTABLE] [--game-arg ARG ...]");
+                println!("pokshelld [--socket PATH] [--game EXECUTABLE] [--game-arg ARG ...] [--game-wayland-display pokshell-NAME]");
                 std::process::exit(0);
             }
             _ => return Err(format!("unknown argument: {}", arg.to_string_lossy())),
         }
     }
-    Ok((socket, program.map(|program| GameConfig { program, args: game_args })))
+    if game_wayland_display.is_some() && program.is_none() {
+        return Err("--game-wayland-display requires --game".into());
+    }
+    Ok((socket, program.map(|program| GameConfig {
+        program, args: game_args, wayland_display: game_wayland_display,
+    })))
 }
 
 /// Read an entire newline-terminated command, including fragmented writes,

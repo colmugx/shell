@@ -35,14 +35,16 @@ rust/compositor/target/debug/pokcomp
 ```
 
 In terminal B, replace `pokshell-1` with the actual socket printed above.
-The daemon inherits this environment; its native game process inherits it
-in turn. Do not change the host desktop's own `WAYLAND_DISPLAY` globally.
+The daemon's `--game-wayland-display` **pins the child** to this nested
+socket, verifies that the server is listening, and disables X11 fallback.
+Using `WAYLAND_DISPLAY` alone was insufficiently robust in KDE.
+Do not change the host desktop's `WAYLAND_DISPLAY` globally.
 
 ```sh
 cd shell
 export WAYLAND_DISPLAY=pokshell-1
 export SDL_VIDEODRIVER=wayland
-rust/target/debug/pokshelld --game /usr/games/supertux
+rust/target/debug/pokshelld --game /usr/games/supertux --game-wayland-display pokshell-1
 ```
 
 In terminal C, start the existing separate Wayland Layer Client against

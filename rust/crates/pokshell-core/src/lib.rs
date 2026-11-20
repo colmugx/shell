@@ -2,7 +2,11 @@
 //! Game-first native Linux session control plane.
 //!
 //! This is process supervision and an event model, NOT a graphics compositor.
+use std::env;
 use std::ffi::OsString;
+use std::fs;
+use std::os::unix::fs::FileTypeExt;
+use std::os::unix::net::UnixStream;
 use std::io;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::PathBuf;
@@ -39,6 +43,9 @@ mod unix_signal {
 pub struct GameConfig {
     pub program: PathBuf,
     pub args: Vec<OsString>,
+    /// Explicit *nested* Wayland socket basename. With Some(..), fail closed
+    /// instead of accidentally opening the game under KDE/XWayland.
+    pub wayland_display: Option<OsString>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,6 +149,54 @@ impl Supervisor {
         })
     }
 
+    /// Isolate a game's display from the KDE host. An explicit nested target
+    /// is required: without it we preserve the original general-purpose
+    /// process-supervisor behavior for non-graphical tests.
+    fn configure_game_display(config: &GameConfig, command: &mut Command) -> io::Result<()> {
+        let Some(display) = &config.wayland_display else { return Ok(()); };
+        let name = display.to_str().ok_or_else(|| io::Error::new(
+            io::ErrorKind::InvalidInput, "Wayland socket name must be UTF-8"
+        ))?;
+        // Never silently accept the host KDE socket (typically wayland-0).
+        if !name.starts_with("pokshell-") || name.len() <= "pokshell-".len()
+            || name.len() > 70 || !name.bytes().all(|c|
+                c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+        {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                "game Wayland display must be a pokshell-* socket basename"));
+        }
+        let runtime = env::var_os("XDG_RUNTIME_DIR")
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound,
+                "XDG_RUNTIME_DIR is missing for nested Wayland game"))?;
+        let runtime = PathBuf::from(runtime);
+        if !runtime.is_absolute() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                "XDG_RUNTIME_DIR must be an absolute directory"));
+        }
+        let socket_path = runtime.join(display);
+        let metadata = fs::metadata(&socket_path).map_err(|err| io::Error::new(
+            err.kind(), format!("nested game socket {} not ready: {err}", socket_path.display())
+        ))?;
+        if !metadata.file_type().is_socket() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                format!("nested game endpoint is not a socket: {}", socket_path.display())));
+        }
+        // A successful connect proves there is a listening server, not just a
+        // stale socket file; it is intentionally not a Wayland protocol probe.
+        let _stream = UnixStream::connect(&socket_path).map_err(|err| io::Error::new(
+            err.kind(), format!("cannot connect to nested game socket {}: {err}", socket_path.display())
+        ))?;
+        command.env("WAYLAND_DISPLAY", display)
+            .env("SDL_VIDEODRIVER", "wayland")
+            .env("GDK_BACKEND", "wayland")
+            .env("QT_QPA_PLATFORM", "wayland")
+            .env("XDG_SESSION_TYPE", "wayland")
+            .env_remove("DISPLAY")
+            .env_remove("WAYLAND_SOCKET"); // inherited fd overrides WAYLAND_DISPLAY
+        eprintln!("pokshell: game transport nested_wayland={name} x11_fallback=disabled");
+        Ok(())
+    }
+
     pub fn start(&mut self) -> io::Result<u32> {
         if let Some(pid) = self.snapshot()?.running_pid {
             return Err(io::Error::new(io::ErrorKind::AlreadyExists,
@@ -154,6 +209,7 @@ impl Supervisor {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit());
+        Self::configure_game_display(config, &mut command)?;
         command.process_group(0); // Safe std API, available since Rust 1.64.
         let child = command.spawn()?;
         let pid = child.id();
@@ -280,6 +336,7 @@ mod tests {
     fn lifecycle_events_and_signal_exit() {
         let mut service = Supervisor::new(Some(GameConfig {
             program: PathBuf::from("/bin/sleep"), args: vec!["120".into()],
+            wayland_display: None,
         }));
         let pid = service.start().unwrap();
         assert_eq!(service.take_events(), vec![SessionEvent::GameStarted {pid}]);
@@ -296,9 +353,22 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn explicit_wayland_display_is_fail_closed() {
+        let mut service = Supervisor::new(Some(GameConfig {
+            program: PathBuf::from("/bin/sleep"),
+            args: vec!["120".into()],
+            wayland_display: Some("wayland-0".into()),
+        }));
+        assert!(service.execute("GAME START").contains("pokshell-*"));
+        assert!(service.snapshot().unwrap().running_pid.is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn spontaneous_exit_is_reaped_and_reported() {
         let mut service = Supervisor::new(Some(GameConfig {
             program: PathBuf::from("/bin/false"), args: vec![],
+            wayland_display: None,
         }));
         let pid = service.start().unwrap();
         service.take_events();

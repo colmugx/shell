@@ -71,10 +71,17 @@ Expected: a dark **separate KDE window** and output such as
 cd ~/workspace/shell
 export WAYLAND_DISPLAY=pokshell-1  # replace with A's actual output
 export SDL_VIDEODRIVER=wayland
-./rust/target/debug/pokshelld --game /usr/games/supertux
+./rust/target/debug/pokshelld \
+    --game /usr/games/supertux \
+    --game-wayland-display pokshell-1
 ```
 
 Expected: `pokshelld ready socket=/run/user/<UID>/pokshell.sock`.
+The required `--game-wayland-display` explicitly targets pokcomp's
+own socket (use A's actual printed name). It overrides inherited
+`WAYLAND_DISPLAY` and `SDL_VIDEODRIVER`, removes `DISPLAY` and
+`WAYLAND_SOCKET`, and refuses GAME START when the nested socket is missing.
+The host KDE/KWin socket must **not** be used as the game socket.
 If the daemon reports `socket already exists`, first ensure that no
 `pokshelld` process is listening on that socket. **Never unlink a live
 server's socket.** With the new signal handling, normal Ctrl+C/SIGTERM
@@ -128,7 +135,8 @@ Finally, Ctrl+C the compositor (A) and layer client (C) if still running.
 ## Acceptance checklist
 
 - [ ] A runs nested in **KDE/KWin Wayland**, no DRM/KMS permission error.
-- [ ] B's daemon is the *same user* and can start/stop SuperTux.
+- [ ] B's daemon is the *same user* and starts SuperTux with explicit
+      `--game-wayland-display`. A game window must not open separately in KDE.
 - [ ] C connects to **pokcomp**, not the host KWin display.
 - [ ] The game continues responding while the overlay appears.
 - [ ] Clicking the visible panel closes it; the game PID remains unchanged.
