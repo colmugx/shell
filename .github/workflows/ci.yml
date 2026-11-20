@@ -1,4 +1,4 @@
-name: Linux native alpha
+name: Linux native + Rust session
 on:
   push:
     branches: [main]
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  build-test:
+  legacy-framebuffer:
     strategy:
       fail-fast: false
       matrix:
@@ -17,13 +17,31 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - name: Configure
+      - name: Configure C experiment
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-      - name: Build
+      - name: Build C experiment
         run: cmake --build build --parallel 2
-      - name: Native Linux integration test
+      - name: C headless integration test
         run: POCKET_BIN_DIR="$PWD/build" python3 tests/test_runtime.py
       - name: Headless image smoke test
         run: |
           ./build/pocket-session --headless --frames 2 --screenshot /tmp/pokshell.ppm
           test -s /tmp/pokshell.ppm
+
+  rust-session:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust unit tests
+        run: cargo test --workspace --locked
+      - name: Rust build
+        run: cargo build --workspace --locked
+      - name: IPC and child-process integration test
+        run: python3 tests/ipc_integration.py
