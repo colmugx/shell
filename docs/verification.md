@@ -7,7 +7,7 @@ All statements below describe the checked-in bootstrap and its independent CI, n
 | Linux x86_64 native CMake compilation | GitHub Actions build on Linux x86_64 | CI tested; compiler may report indentation warnings |
 | Headless renderer screenshot and test game process | `tests/test_runtime.py` | Tested on Linux x86_64 |
 | Local socket commands and overlay state | `tests/test_runtime.py` | Tested on Linux x86_64 |
-| ARM64 cross-build | GitHub Actions native AArch64 runner (once job completes) | CI pending |
+| ARM64 cross-build | GitHub Actions ubuntu-24.04-arm runner | Passed on 2026-11-20; native AArch64 user-space build/test only |
 | Debian ARM64 under UTM | No current boot log | Not verified |
 | Buildroot generated rootfs boot in QEMU virt | No current boot log | Not verified |
 | PocketJS native shell | No linked PocketJS Linux host in this drop | Not implemented |
