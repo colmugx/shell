@@ -10,7 +10,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use smithay::{
-    delegate_compositor, delegate_data_device, delegate_seat, delegate_shm, delegate_xdg_shell,
+    delegate_compositor, delegate_data_device, delegate_output, delegate_seat, delegate_shm, delegate_xdg_shell,
+    delegate_layer_shell,
     backend::{
         input::{InputEvent, KeyboardKeyEvent},
         renderer::{
@@ -22,26 +23,33 @@ use smithay::{
         winit::{self, WinitEvent},
     },
     input::{keyboard::FilterResult, Seat, SeatHandler, SeatState},
+    output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::wayland_server::{protocol::wl_seat, Display},
     utils::{Rectangle, Serial, Transform},
     wayland::{
         buffer::BufferHandler,
+        output::{OutputHandler, OutputManagerState},
         compositor::{
             with_surface_tree_downward, CompositorClientState, CompositorHandler,
             CompositorState, SurfaceAttributes, TraversalAction,
         },
         selection::{data_device::{ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler}, SelectionHandler},
-        shell::xdg::{PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState},
+        shell::{
+            wlr_layer::{Layer, LayerSurface, WlrLayerShellHandler, WlrLayerShellState},
+            xdg::{PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState},
+        },
         shm::{ShmHandler, ShmState},
     },
 };
 use wayland_protocols::xdg::shell::server::xdg_toplevel;
 use wayland_server::{
     backend::{ClientData, ClientId, DisconnectReason},
-    protocol::{wl_buffer, wl_surface::{self, WlSurface}},
+    protocol::{wl_buffer, wl_output::WlOutput, wl_surface::{self, WlSurface}},
     Client, ListeningSocket,
 };
 use ::winit::platform::pump_events::PumpStatus;
+
+const DIAGNOSTIC_LAYER_WIDTH: i32 = 320;
 
 const HELP: &str = "pokcomp [--socket NAME]\n\
     Starts a nested Wayland compositor in a host Wayland/X11 window.\n\
@@ -76,6 +84,9 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Option<Option
 struct PokCompositor {
     compositor_state: CompositorState,
     xdg_shell_state: XdgShellState,
+    layer_shell_state: WlrLayerShellState,
+    output_manager_state: OutputManagerState,
+    output: Output,
     shm_state: ShmState,
     seat_state: SeatState<Self>,
     data_device_state: DataDeviceState,
@@ -110,8 +121,37 @@ impl CompositorHandler for PokCompositor {
 
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
+        // Layer-shell requires the first configure after an empty initial
+        // commit. Do not attach a buffer before that configure/ack exchange.
+        if let Some(layer) = self.layer_shell_state.layer_surfaces()
+            .find(|layer| layer.wl_surface() == surface && layer.alive())
+        {
+            if layer.has_pending_changes() {
+                let height = self.output.current_mode().map(|mode| mode.size.h).unwrap_or(720);
+                layer.with_pending_state(|state| {
+                    state.size = Some((DIAGNOSTIC_LAYER_WIDTH, height).into());
+                });
+                layer.send_configure();
+            }
+        }
     }
 }
+
+impl WlrLayerShellHandler for PokCompositor {
+    fn shell_state(&mut self) -> &mut WlrLayerShellState { &mut self.layer_shell_state }
+
+    fn new_layer_surface(
+        &mut self,
+        _surface: LayerSurface,
+        _output: Option<WlOutput>,
+        _layer: Layer,
+        _namespace: String,
+    ) {
+        // The initial wl_surface.commit triggers the Configure handshake.
+    }
+}
+
+impl OutputHandler for PokCompositor {}
 
 impl ShmHandler for PokCompositor {
     fn shm_state(&self) -> &ShmState { &self.shm_state }
@@ -171,9 +211,27 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
     let mut seat_state = SeatState::new();
     let seat = seat_state.new_wl_seat(&dh, "pokshell-keyboard");
 
+    // Advertise an output: many SDL/Wayland clients require wl_output
+    // before they can choose a window/video mode.
+    let initial_mode = Mode { size: backend.window_size(), refresh: 60_000 };
+    let output = Output::new("pokshell-nested".to_string(), PhysicalProperties {
+        size: (0, 0).into(),
+        subpixel: Subpixel::Unknown,
+        make: "pokshell".into(),
+        model: "nested-winit".into(),
+    });
+    let _output_global = output.create_global::<PokCompositor>(&dh);
+    output.change_current_state(
+        Some(initial_mode), Some(Transform::Flipped180), None, Some((0, 0).into()),
+    );
+    output.set_preferred(initial_mode);
+
     let mut state = PokCompositor {
         compositor_state: CompositorState::new::<PokCompositor>(&dh),
         xdg_shell_state: XdgShellState::new::<PokCompositor>(&dh),
+        layer_shell_state: WlrLayerShellState::new::<PokCompositor>(&dh),
+        output_manager_state: OutputManagerState::new_with_xdg_output::<PokCompositor>(&dh),
+        output,
         shm_state: ShmState::new::<PokCompositor>(&dh, vec![]),
         data_device_state: DataDeviceState::new::<PokCompositor>(&dh),
         seat_state,
@@ -193,6 +251,17 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
 
     loop {
         let status = host.dispatch_new_events(|event| match event {
+            WinitEvent::Resized { size, .. } => {
+                let mode = Mode { size, refresh: 60_000 };
+                state.output.change_current_state(Some(mode), None, None, None);
+                state.output.set_preferred(mode);
+                for layer in state.layer_shell_state.layer_surfaces().filter(|layer| layer.alive()) {
+                    layer.with_pending_state(|pending| {
+                        pending.size = Some((DIAGNOSTIC_LAYER_WIDTH, size.h).into());
+                    });
+                    layer.send_configure();
+                }
+            }
             WinitEvent::Input(InputEvent::Keyboard { event }) => {
                 keyboard.input::<(), _>(
                     &mut state,
@@ -227,24 +296,36 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
         let damage = Rectangle::from_size(size);
         {
             let (renderer, mut framebuffer) = backend.bind()?;
-            // All xdg toplevels currently overlap. This is a protocol and
-            // rendering probe, not a full window or surface management policy.
-            let elements = state.xdg_shell_state.toplevel_surfaces()
-                .iter()
-                .flat_map(|surface| {
-                    render_elements_from_surface_tree(
-                        renderer, surface.wl_surface(), (0, 0), 1.0, 1.0, Kind::Unspecified,
-                    )
-                })
-                .collect::<Vec<WaylandSurfaceRenderElement<GlesRenderer>>>();
+            // Smithay draws input render elements front-to-back, so layer
+            // surfaces must appear before game XDG elements to appear above
+            // them in the final composed frame.
+            let mut elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = Vec::new();
+            for layer in state.layer_shell_state.layer_surfaces().filter(|layer| layer.alive()) {
+                // The diagnostic client requests TOP|BOTTOM|RIGHT, width=320.
+                // General anchor/stacking policy is deliberately not yet present.
+                let x = (size.w - DIAGNOSTIC_LAYER_WIDTH).max(0);
+                elements.extend(render_elements_from_surface_tree(
+                    renderer, layer.wl_surface(), (x, 0), 1.0, 1.0, Kind::Unspecified,
+                ));
+            }
+            // All XDG toplevels overlap at the origin for this experiment.
+            for surface in state.xdg_shell_state.toplevel_surfaces() {
+                elements.extend(render_elements_from_surface_tree(
+                    renderer, surface.wl_surface(), (0, 0), 1.0, 1.0, Kind::Unspecified,
+                ));
+            }
 
             let mut frame = renderer.render(&mut framebuffer, size, Transform::Flipped180)?;
             frame.clear(Color32F::new(0.04, 0.05, 0.07, 1.0), &[damage])?;
             draw_render_elements(&mut frame, 1.0, &elements, &[damage])?;
             let _ = frame.finish()?;
 
+            let timestamp_ms = start.elapsed().as_millis() as u32;
             for surface in state.xdg_shell_state.toplevel_surfaces() {
-                send_frame_callbacks(surface.wl_surface(), start.elapsed().as_millis() as u32);
+                send_frame_callbacks(surface.wl_surface(), timestamp_ms);
+            }
+            for surface in state.layer_shell_state.layer_surfaces().filter(|layer| layer.alive()) {
+                send_frame_callbacks(surface.wl_surface(), timestamp_ms);
             }
         }
         display.flush_clients()?;
@@ -276,6 +357,8 @@ delegate_compositor!(PokCompositor);
 delegate_shm!(PokCompositor);
 delegate_seat!(PokCompositor);
 delegate_data_device!(PokCompositor);
+delegate_output!(PokCompositor);
+delegate_layer_shell!(PokCompositor);
 
 #[cfg(test)]
 mod tests {
