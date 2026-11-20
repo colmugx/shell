@@ -82,6 +82,34 @@ with tempfile.TemporaryDirectory(prefix="pokshell-") as directory:
         assert "OK QUIT" in call("QUIT")
         assert daemon.wait(timeout=5) == 0
         assert not socket_path.exists()
+
+        # External SIGTERM/SIGINT must not leave a dead socket behind.
+        # They must also stop the configured game's process group.
+        for signum in (15, 2):
+            daemon = subprocess.Popen(
+                [str(bin_dir / "pokshelld"), "--socket", str(socket_path),
+                 "--game", "/bin/sleep", "--game-arg", "120"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            for _ in range(100):
+                if socket_path.is_socket():
+                    break
+                if daemon.poll() is not None:
+                    raise AssertionError("daemon exited before signal test")
+                time.sleep(0.02)
+            assert socket_path.is_socket(), "signal test socket missing"
+            reply = call("GAME", "START")
+            assert reply.startswith("OK GAME START pid="), reply
+            pid = int(reply.split("pid=")[1].strip())
+            os.kill(daemon.pid, signum)
+            assert daemon.wait(timeout=6) == 0
+            assert not socket_path.exists(), f"socket remained after signal {signum}"
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                pass
+            else:
+                raise AssertionError(f"game PID {pid} survived daemon signal {signum}")
     finally:
         if daemon.poll() is None:
             daemon.kill()
