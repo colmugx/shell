@@ -46,13 +46,16 @@ rust/target/debug/pokshelld --game /usr/games/supertux
 ```
 
 In terminal C, start the existing separate Wayland Layer Client against
-the **same nested compositor socket**. It uses the daemon's WATCH stream:
+the **same nested compositor socket**. It uses the daemon's WATCH stream.
+`--interactive` gives a visible diagnostic panel a pointer input region:
+clicking the panel issues `OVERLAY CLOSE` via IPC. Without that flag the
+older diagnostic panel remains click-through:
 
 ```sh
 cd shell
 export WAYLAND_DISPLAY=pokshell-1
 cargo build --manifest-path graphics/wayland-layer/Cargo.toml
-graphics/wayland-layer/target/debug/pokshell-layer
+graphics/wayland-layer/target/debug/pokshell-layer --interactive
 ```
 
 In terminal D, control the game and overlay:
@@ -83,6 +86,10 @@ that XDG game and layer render elements are produced, that layer buffers
 switch from transparent to visible and back, and that the game PID remains
 unchanged across the overlay transition.
 
+The test also starts the layer with `--interactive`, exercising the
+Wayland seat/pointer protocol binding, but CI does **not** synthesize a mouse
+click; click-to-close requires the manual KDE/UTM acceptance test.
+
 This is **automated software-renderer integration**; it does not prove
 pixels on a physical display, hardware GPU acceleration, UTM performance,
 pointer/controller focus, or a DRM/KMS-native shell.
@@ -94,12 +101,15 @@ pointer/controller focus, or a DRM/KMS-native shell.
   `zwlr_layer_shell_v1` implementation. It configures and renders a
   **single diagnostic right-side overlay** above XDG game surfaces; generalized
   layer policy, margins, layer stacking, shell surfaces on multiple monitors,
-  and independent overlay input focus remain unimplemented.
+  and keyboard/gamepad overlay focus remain unimplemented.
 - XDG toplevels overlap at the same origin. No placement, fullscreen
   negotiation, popup behavior, correct pointer hit testing, output scale,
   gamepad, touch, window occlusion, or multi-display policy.
-- Keyboard focus is provisional and selected on absolute pointer motion.
-  This is not yet suitable for a game/interactive overlay coexistence test.
+- Pointer movement/button events are forwarded to surfaces according to
+  Wayland input regions; clicking establishes keyboard focus. The optional
+  interactive diagnostic layer can close itself through IPC on a left click.
+  A full controller-driven menu, touch policy, pointer grabs and gamepad input
+  remain unimplemented.
 - No dmabuf advertisement or verified Vulkan/GLES client zero-copy path.
   The GLES backend is only the nested compositor's output renderer.
 - The compositor **does not spawn** arbitrary commands or replace
