@@ -1,13 +1,13 @@
 # Verification status
 
-All statements below describe the **source drop at import**, not completed hardware bring-up.
+All statements below describe the checked-in bootstrap and its independent CI, not completed hardware bring-up.
 
 | Feature | Evidence | Status |
 | --- | --- | --- |
-| Linux x86_64 native CMake compilation | Rebuilt from the prior Linux alpha source in 2026-11-20 session | Tested; compiler has indentation warnings |
+| Linux x86_64 native CMake compilation | GitHub Actions build on Linux x86_64 | CI tested; compiler may report indentation warnings |
 | Headless renderer screenshot and test game process | `tests/test_runtime.py` | Tested on Linux x86_64 |
 | Local socket commands and overlay state | `tests/test_runtime.py` | Tested on Linux x86_64 |
-| ARM64 cross-build | None | Not verified |
+| ARM64 cross-build | GitHub Actions native AArch64 runner (once job completes) | CI pending |
 | Debian ARM64 under UTM | No current boot log | Not verified |
 | Buildroot generated rootfs boot in QEMU virt | No current boot log | Not verified |
 | PocketJS native shell | No linked PocketJS Linux host in this drop | Not implemented |
