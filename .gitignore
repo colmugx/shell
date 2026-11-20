@@ -3,5 +3,5 @@ output/
 *.o
 *.ppm
 *.sock
-__pycache__/
+*.log
 .DS_Store
