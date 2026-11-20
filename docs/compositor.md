@@ -7,7 +7,7 @@ a **host Wayland or X11 window**. This is not the final DRM/KMS native session.
 
 ## Build
 
-Requires Rust 1.88+ and a working Linux Wayland/X11 graphical session
+Requires Rust 1.82+ and a working Linux Wayland/X11 graphical session
 with EGL/OpenGL ES and development libraries (`pkg-config`, Wayland,
 EGL, XKB). The compositor is a standalone Cargo workspace so the
 existing dependency-free `rust/` workspace and lockfile remain unchanged.
