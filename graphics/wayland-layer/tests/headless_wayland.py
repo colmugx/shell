@@ -14,7 +14,7 @@ with tempfile.TemporaryDirectory(prefix="pokshell-wayland-") as dirname:
     runtime = root / "runtime"
     runtime.mkdir(mode=0o700)
     conf = root / "sway.conf"
-    conf.write_text("output * resolution 1280x720\nfont pango:monospace 10\n")
+    conf.write_text("xwayland disable\noutput * resolution 1280x720\nfont pango:monospace 10\n")
     env = {
         **os.environ,
         "XDG_RUNTIME_DIR": str(runtime),
@@ -22,7 +22,6 @@ with tempfile.TemporaryDirectory(prefix="pokshell-wayland-") as dirname:
         "WLR_LIBINPUT_NO_DEVICES": "1",
         "WLR_RENDERER": "pixman",
         "WLR_HEADLESS_OUTPUTS": "1",
-        "WAYLAND_DISPLAY": "pokshell-test-wayland",
     }
     sway_log = root / "sway.log"
     layer_log = root / "layer.log"
@@ -34,15 +33,18 @@ with tempfile.TemporaryDirectory(prefix="pokshell-wayland-") as dirname:
     layer = None
     try:
         deadline = time.monotonic() + 12
-        path = runtime / env["WAYLAND_DISPLAY"]
+        path = None
         while time.monotonic() < deadline:
-            if path.is_socket():
+            sockets = [p for p in runtime.glob("wayland-*") if p.is_socket()]
+            if sockets:
+                path = sockets[0]
                 break
             if compositor.poll() is not None:
                 raise RuntimeError("headless sway exited:\n" + sway_log.read_text(errors="replace")[-6000:])
             time.sleep(.1)
         else:
             raise RuntimeError("Wayland socket not created:\n" + sway_log.read_text(errors="replace")[-6000:])
+        env["WAYLAND_DISPLAY"] = path.name
         with layer_log.open("wb") as log:
             layer = subprocess.Popen(
                 ["./target/debug/pokshell-layer", "--show"],
