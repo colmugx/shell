@@ -51,8 +51,10 @@ The standalone Rust client at [`graphics/wayland-layer`](graphics/wayland-layer)
 `rust/compositor` now contains an **experimental Smithay-backed Wayland server**,
 separate from the proven `pokshelld` control plane and standalone
 `graphics/wayland-layer` client. The initial Winit/GLES backend draws XDG
-toplevels inside a host window. **No native DRM/KMS, layer-shell integration,
-UTM visible rendering, or interactive overlay is claimed.** See the
+toplevels and diagnostic Layer Surfaces inside a host window. A software
+headless CI integration test exercises a native XDG client, daemon IPC
+and overlay visibility changes without terminating the game. **No native
+DRM/KMS, UTM visible rendering, or interactive overlay is claimed.** See the
 [compositor build and manual test guide](docs/compositor.md).
 
 ## Historical C framebuffer experiment

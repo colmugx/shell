@@ -139,17 +139,32 @@ with tempfile.TemporaryDirectory(prefix="pokcomp-nested-") as dirname:
             lambda: "pokcomp: game render elements present" in comp_log.read_text(errors="replace"),
             compositor, comp_log, "nested game render elements",
         )
-        assert "mode=game" in control("STATUS")
+        first_status = control("STATUS")
+        assert "mode=game" in first_status
+        pid = next(part for part in first_status.split() if part.startswith("pid="))
+        assert pid != "pid=none"
 
         assert "OK OVERLAY OPEN" in control("OVERLAY", "OPEN")
         wait_for(
             lambda: "pokcomp: layer render elements present" in comp_log.read_text(errors="replace"),
             compositor, comp_log, "nested layer render elements",
         )
+        wait_for(
+            lambda: "pokshell-layer buffer committed visible=1"
+                in layer_log.read_text(errors="replace"),
+            layer, layer_log, "visible diagnostic panel commit",
+        )
         assert "overlay=1" in control("STATUS")
-        assert "mode=game" in control("STATUS")
+        assert pid in control("STATUS"), "overlay opening replaced game PID"
         assert "OK OVERLAY CLOSED" in control("OVERLAY", "CLOSE")
-        assert "mode=game" in control("STATUS")
+        wait_for(
+            lambda: "pokshell-layer buffer committed visible=0"
+                in layer_log.read_text(errors="replace").split(
+                    "pokshell-layer buffer committed visible=1", 1
+                )[-1],
+            layer, layer_log, "transparent panel commit after close",
+        )
+        assert pid in control("STATUS"), "overlay closing replaced game PID"
         assert "OK GAME STOP" in control("GAME", "STOP")
         assert "mode=home" in control("STATUS")
         assert "OK QUIT" in control("QUIT")
