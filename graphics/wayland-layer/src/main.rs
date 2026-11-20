@@ -172,8 +172,8 @@ impl Dispatch<wl_seat::WlSeat, ()> for App {
     fn event(state: &mut Self, seat: &wl_seat::WlSeat, event: wl_seat::Event,
         _: &(), _: &Connection, qh: &QueueHandle<Self>) {
         if let wl_seat::Event::Capabilities { capabilities } = event {
-            if capabilities.into_result().map(|caps| caps.contains(wl_seat::Capability::Pointer))
-                == Ok(true) && state.pointer.is_none()
+            if capabilities.into_result().is_ok_and(|caps| caps.contains(wl_seat::Capability::Pointer))
+                && state.pointer.is_none()
             {
                 state.pointer = Some(seat.get_pointer(qh, ()));
             }
@@ -243,7 +243,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let visible = Arc::new(AtomicBool::new(force_visible));
-    if !force_visible { subscribe(socket, Arc::clone(&visible)); }
+    if !force_visible { subscribe(socket.clone(), Arc::clone(&visible)); }
 
     let conn = Connection::connect_to_env()?;
     let (globals, mut queue) = registry_queue_init::<App>(&conn)?;
