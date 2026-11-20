@@ -26,7 +26,7 @@ A Wayland compositor is the intended **system graphical session**, not a traditi
 
 ## Existing implementation
 
-- `rust/`: pure-Rust native-game supervisor, IPC daemon and CLI; overlay **state only**; no display backend.
+- `rust/`: pure-Rust native-game supervisor, bounded multi-client IPC daemon, live in-memory state-change events and CLI; overlay **state only**; no display backend.
 - `src/`: legacy C software framebuffer prototype; useful for testing direct frame access but does **not** implement generic games or a production overlay.
 
 ## Intended acceptance gates

@@ -5,7 +5,7 @@ Evidence is tracked per implementation, per machine and per hardware reference.
 | Capability | Evidence | Status |
 | --- | --- | --- |
 | Legacy C framebuffer alpha on x86-64/ARM64 | GitHub Actions Linux builds/tests | CI verified |
-| Rust process supervision, state transitions, command IPC | `rust/` tests + GitHub Actions | CI tested on x86-64 / ARM64 (verify latest run) |
+| Rust process supervision, termination grace, event subscription, fragmented IPC | `rust/` unit/integration tests; Actions run 44695342191 | CI passed on x86-64 / ARM64 |
 | Rust user session in Debian ARM64 / UTM | No local UTM boot log | Unverified |
 | Bootable Buildroot QEMU image | No QEMU boot log | Unverified |
 | DRM/KMS and Wayland compositor | Not present | Not implemented |
@@ -18,6 +18,6 @@ Evidence is tracked per implementation, per machine and per hardware reference.
 
 ## Security/maintenance note
 
-Current Rust daemon uses a user-owned local Unix socket (0600), fixed configured game executable, no shell interpolation, and no TCP API. It is a prototype; it does not yet implement sandboxing, privilege separation, graceful game termination or robust multi-client framing. Do not expose this as a privileged system-wide service.
+Current Rust daemon uses a user-owned local Unix socket (0600), fixed configured game executable, no shell interpolation, and no TCP API. It is a prototype; it does not yet implement sandboxing, privilege separation, service-wide SIGINT/SIGTERM shutdown hooks, durable/replayable events, or a robust cgroup-based descendant process lifecycle. `GAME STOP` uses process-group SIGTERM and a short SIGKILL escalation window. Termination of descendants after the main game process exits independently remains to be addressed. Do not expose this as a privileged system-wide service.
 
 The historical C framebuffer program is not suitable as a production display manager.

@@ -19,8 +19,8 @@ Read [Linux-first strategy and language choices](docs/boot-and-languages.md) and
 `rust/` contains a no-desktop, dependency-free Rust workspace:
 
 - `pokshell-core`: native game-process supervision, state machine and logical overlay status
-- `pokshelld`: per-session Unix socket daemon; executes **only the configured game executable**
-- `pokctl`: command-line control client
+- `pokshelld`: per-session Unix socket daemon; executes **only the configured game executable**, with bounded client connections and live event subscribers
+- `pokctl`: command-line control client, including live `WATCH` event stream
 - unit tests and Linux IPC/process integration tests
 
 **This is not yet a compositor.** Opening an overlay changes control-plane state only; it does not display one. No PocketJS host, MoonBit runtime or WAMR worker is currently linked.
@@ -35,11 +35,12 @@ python3 tests/ipc_integration.py
 cargo run --bin pokshelld -- --game /bin/sleep --game-arg 120
 cargo run --bin pokctl -- GAME START
 cargo run --bin pokctl -- STATUS
+cargo run --bin pokctl -- OVERLAY OPEN
 cargo run --bin pokctl -- GAME STOP
 cargo run --bin pokctl -- QUIT
 ```
 
-GitHub Actions exercises Rust and C baselines on x86-64 and native ARM64 Linux runners.
+Watch state changes in a third terminal with `cargo run --bin pokctl -- WATCH`. The event stream includes game started/exited and overlay open/closed. It is an in-memory live feed, not a durable event log.\n\nGitHub Actions exercises Rust and C baselines on x86-64 and native ARM64 Linux runners.
 
 ## Historical C framebuffer experiment
 
