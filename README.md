@@ -53,7 +53,9 @@ separate from the proven `pokshelld` control plane and standalone
 `graphics/wayland-layer` client. The initial Winit/GLES backend draws XDG
 toplevels and diagnostic Layer Surfaces inside a host window. A software
 headless CI integration test exercises a native XDG client, daemon IPC
-and overlay visibility changes without terminating the game. **No native
+and overlay visibility changes without terminating the game. An experimental
+`--interactive` layer mode enables click-to-close, and nested compositor
+pointer routing now honors surface input regions. **No native
 DRM/KMS, UTM visible rendering, or interactive overlay is claimed.** See the
 [compositor build and manual test guide](docs/compositor.md).
 
