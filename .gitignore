@@ -1,0 +1,7 @@
+build/
+output/
+*.o
+*.ppm
+*.sock
+__pycache__/
+.DS_Store
