@@ -91,3 +91,14 @@ jobs:
         run: cargo test
       - name: Help works without a graphical session
         run: ./target/debug/pokcomp --help
+      - name: Build existing layer client for integration
+        if: matrix.runner == 'ubuntu-24.04'
+        run: cargo build --manifest-path ../../graphics/wayland-layer/Cargo.toml
+      - name: Install software headless wlroots host
+        if: matrix.runner == 'ubuntu-24.04'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends sway libgl1-mesa-dri
+      - name: Smithay nested layer configure smoke test
+        if: matrix.runner == 'ubuntu-24.04'
+        run: python3 tests/headless_nested.py
