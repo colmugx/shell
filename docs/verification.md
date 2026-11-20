@@ -1,24 +1,23 @@
 # Verification status
 
-All statements below describe the checked-in bootstrap and its independent CI, not completed hardware bring-up.
+Evidence is tracked per implementation, per machine and per hardware reference.
 
-| Feature | Evidence | Status |
+| Capability | Evidence | Status |
 | --- | --- | --- |
-| Linux x86_64 native CMake compilation | GitHub Actions build on Linux x86_64 | CI tested; compiler may report indentation warnings |
-| Headless renderer screenshot and test game process | `tests/test_runtime.py` | Tested on Linux x86_64 |
-| Local socket commands and overlay state | `tests/test_runtime.py` | Tested on Linux x86_64 |
-| ARM64 cross-build | GitHub Actions ubuntu-24.04-arm runner | Passed on 2026-11-20; native AArch64 user-space build/test only |
-| Debian ARM64 under UTM | No current boot log | Not verified |
-| Buildroot generated rootfs boot in QEMU virt | No current boot log | Not verified |
-| PocketJS native shell | No linked PocketJS Linux host in this drop | Not implemented |
-| WAMR component worker | Not in this framebuffer alpha | Not implemented |
-| DRM/KMS hardware compositor / arbitrary SDL games | No implementation | Not implemented |
-| RG35XX H, RG40XX H, Duo Lite, RP6 on-device support | No hardware tests | Not verified |
+| Legacy C framebuffer alpha on x86-64/ARM64 | GitHub Actions Linux builds/tests | CI verified |
+| Rust process supervision, state transitions, command IPC | `rust/` tests + GitHub Actions | CI tested on x86-64 / ARM64 (verify latest run) |
+| Rust user session in Debian ARM64 / UTM | No local UTM boot log | Unverified |
+| Bootable Buildroot QEMU image | No QEMU boot log | Unverified |
+| DRM/KMS and Wayland compositor | Not present | Not implemented |
+| Actual game overlay during arbitrary fullscreen SDL/GLES game | Only Rust overlay state, or legacy framebuffer demonstration | Not implemented |
+| MoonBit/WAMR component execution | Not linked | Not implemented |
+| Production console UI, controller focus, dual screen | Not present | Not implemented |
+| H700, Duo Lite, RP6 physical-device boot / suspend / hardware acceleration | No test reports | Unverified |
 
-## CI interpretation
+**CI tests validate native Linux user-space code; they are not evidence of a bootable firmware or actual GPU output.**
 
-CI verifies that the source **compiles** and that the headless Linux test passes; it does not prove that the AArch64 QEMU image boots or that game compositing works on a physical handheld.
+## Security/maintenance note
 
-## Safety
+Current Rust daemon uses a user-owned local Unix socket (0600), fixed configured game executable, no shell interpolation, and no TCP API. It is a prototype; it does not yet implement sandboxing, privilege separation, graceful game termination or robust multi-client framing. Do not expose this as a privileged system-wide service.
 
-Never flash an experimental QEMU image to any reference handheld. Do not run the current privileged framebuffer/input prototype as a network-exposed service.
+The historical C framebuffer program is not suitable as a production display manager.
