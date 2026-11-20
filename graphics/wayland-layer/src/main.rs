@@ -1,0 +1,238 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//! Temporary, actual Wayland layer-shell transport: not the final UI or compositor.
+//! A separate Wayland game surface continues running underneath this overlay.
+use std::env;
+use std::fs::File;
+use std::io::{self, BufRead, BufReader, Seek, SeekFrom, Write};
+use std::os::fd::AsFd;
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
+use wayland_client::{
+    delegate_noop,
+    globals::{registry_queue_init, GlobalListContents},
+    protocol::{wl_buffer, wl_compositor, wl_region, wl_registry, wl_shm, wl_shm_pool, wl_surface},
+    Connection, Dispatch, QueueHandle,
+};
+use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
+
+const PANEL_WIDTH: i32 = 320;
+const MAX_HEIGHT: i32 = 4096;
+
+fn default_socket() -> PathBuf {
+    env::var_os("XDG_RUNTIME_DIR")
+        .map(|d| PathBuf::from(d).join("pokshell.sock"))
+        .unwrap_or_else(|| PathBuf::from("./pokshell.sock"))
+}
+
+/// Single subscription; reconnect after daemon restart. No draw requests go
+/// through this listener; it only changes a one-bit target surface state.
+fn subscribe(path: PathBuf, target: Arc<AtomicBool>) {
+    thread::spawn(move || loop {
+        target.store(false, Ordering::Release);
+        if let Ok(mut connection) = UnixStream::connect(&path) {
+            if connection.write_all(b"WATCH\n").is_ok() {
+                let mut reader = BufReader::new(connection);
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    if reader.read_line(&mut line).ok().filter(|n| *n > 0).is_none() {
+                        break;
+                    }
+                    if line.starts_with("mode=") {
+                        target.store(line.split_whitespace().any(|s| s == "overlay=1"), Ordering::Release);
+                    } else if line.contains("type=overlay_changed") {
+                        target.store(line.split_whitespace().any(|s| s == "open=1"), Ordering::Release);
+                    } else if line.contains("type=game_exited") {
+                        target.store(false, Ordering::Release);
+                    }
+                }
+            }
+        }
+        thread::sleep(Duration::from_millis(250));
+    });
+}
+
+fn paint(width: i32, height: i32, visible: bool) -> Vec<u8> {
+    let mut frame = vec![0; width as usize * height as usize * 4];
+    if !visible { return frame; }
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            let p = (y * width as usize + x) * 4;
+            // ARGB8888 in native little-endian memory: BGRA, premultiplied.
+            let (r,g,b,a) = if x < 3 {
+                (72, 172, 186, 245)
+            } else if (y >= 52 && y < 54) || (y >= 128 && y < 130) {
+                (43, 67, 87, 237)
+            } else if (y >= 75 && y < 108 && x >= 18 && x < 300) {
+                (37, 70, 80, 232)
+            } else if y >= 144 && y < 174 && x >= 18 && x < 300 {
+                (31, 53, 72, 232)
+            } else {
+                (18, 30, 43, 237)
+            };
+            frame[p..p + 4].copy_from_slice(&[b, g, r, a]);
+        }
+    }
+    frame
+}
+
+struct App {
+    surface: wl_surface::WlSurface,
+    layer: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+    shm: wl_shm::WlShm,
+    pool: Option<wl_shm_pool::WlShmPool>,
+    empty: Option<wl_buffer::WlBuffer>,
+    panel: Option<wl_buffer::WlBuffer>,
+    backing: Option<File>,
+    configured: bool,
+    closed: bool,
+    width: i32,
+    height: i32,
+    drawn: Option<bool>,
+}
+
+impl App {
+    fn allocate(&mut self, qh: &QueueHandle<Self>) -> io::Result<()> {
+        let width = self.width;
+        let height = self.height;
+        if width <= 0 || height <= 0 || height > MAX_HEIGHT {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "unsupported layer dimensions"));
+        }
+        let size = (width as usize).checked_mul(height as usize)
+            .and_then(|n| n.checked_mul(4))
+            .ok_or_else(|| io::Error::other("framebuffer size overflow"))?;
+        let total = size.checked_mul(2).ok_or_else(|| io::Error::other("buffer overflow"))?;
+        if total > i32::MAX as usize { return Err(io::Error::other("shm allocation exceeds protocol limit")); }
+        let mut file = tempfile::tempfile()?;
+        file.set_len(total as u64)?;
+        // Two immutable buffers. No per-frame allocation and no memory mutation
+        // while the Wayland compositor may still be reading the buffer.
+        file.seek(SeekFrom::Start(size as u64))?;
+        file.write_all(&paint(width, height, true))?;
+        let pool = self.shm.create_pool(file.as_fd(), total as i32, qh, ());
+        let empty = pool.create_buffer(0, width, height, width * 4, wl_shm::Format::Argb8888, qh, ());
+        let panel = pool.create_buffer(size as i32, width, height, width * 4,
+            wl_shm::Format::Argb8888, qh, ());
+        self.pool = Some(pool);
+        self.empty = Some(empty);
+        self.panel = Some(panel);
+        self.backing = Some(file);
+        self.drawn = None;
+        Ok(())
+    }
+
+    fn show(&mut self, visible: bool) {
+        if !self.configured || self.drawn == Some(visible) { return; }
+        let buffer = if visible { &self.panel } else { &self.empty };
+        if let Some(buffer) = buffer {
+            self.surface.attach(Some(buffer), 0, 0);
+            self.surface.damage_buffer(0, 0, self.width, self.height);
+            self.surface.commit();
+            self.drawn = Some(visible);
+        }
+    }
+}
+
+impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for App {
+    fn event(_: &mut Self, _: &wl_registry::WlRegistry, _: wl_registry::Event,
+        _: &GlobalListContents, _: &Connection, _: &QueueHandle<Self>) {}
+}
+
+delegate_noop!(App: wl_compositor::WlCompositor);
+delegate_noop!(App: ignore wl_surface::WlSurface);
+delegate_noop!(App: ignore wl_shm::WlShm);
+delegate_noop!(App: wl_shm_pool::WlShmPool);
+delegate_noop!(App: ignore wl_buffer::WlBuffer);
+delegate_noop!(App: wl_region::WlRegion);
+delegate_noop!(App: zwlr_layer_shell_v1::ZwlrLayerShellV1);
+
+impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for App {
+    fn event(state: &mut Self, proxy: &zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+        event: zwlr_layer_surface_v1::Event, _: &(), _: &Connection, qh: &QueueHandle<Self>) {
+        match event {
+            zwlr_layer_surface_v1::Event::Configure { serial, width: _, height } => {
+                proxy.ack_configure(serial);
+                // Width is under our control; compositor chooses output height.
+                state.width = PANEL_WIDTH;
+                state.height = if height == 0 { 720 } else { height as i32 };
+                state.configured = true;
+                if let Err(err) = state.allocate(qh) {
+                    eprintln!("pokshell-layer: allocate: {err}");
+                    state.closed = true;
+                }
+            }
+            zwlr_layer_surface_v1::Event::Closed => state.closed = true,
+            _ => {}
+        }
+    }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut socket = default_socket();
+    let mut force_visible = false;
+    let mut args = env::args_os().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.to_str() {
+            Some("--socket") => socket = PathBuf::from(args.next().ok_or("--socket needs a value")?),
+            Some("--show") => force_visible = true,
+            Some("--help") => {
+                println!("pokshell-layer [--socket PATH] [--show]\nRequires Wayland compositor with wlr-layer-shell-v1");
+                return Ok(());
+            }
+            _ => return Err(format!("unknown argument: {}", arg.to_string_lossy()).into()),
+        }
+    }
+    let visible = Arc::new(AtomicBool::new(force_visible));
+    if !force_visible { subscribe(socket, Arc::clone(&visible)); }
+
+    let conn = Connection::connect_to_env()?;
+    let (globals, mut queue) = registry_queue_init::<App>(&conn)?;
+    let qh = queue.handle();
+    let compositor: wl_compositor::WlCompositor = globals.bind(&qh, 4..=4, ())?;
+    let shm: wl_shm::WlShm = globals.bind(&qh, 1..=1, ())?;
+    let layer_shell: zwlr_layer_shell_v1::ZwlrLayerShellV1 = globals.bind(&qh, 1..=4, ())
+        .map_err(|_| "Wayland compositor does not advertise wlr-layer-shell-v1")?;
+    let surface = compositor.create_surface(&qh, ());
+    // Diagnostic overlay must not steal controller/mouse/keyboard input.
+    let empty_region = compositor.create_region(&qh, ());
+    surface.set_input_region(Some(&empty_region));
+    empty_region.destroy();
+    let layer = layer_shell.get_layer_surface(&surface, None,
+        zwlr_layer_shell_v1::Layer::Overlay, "pokshell-system".to_owned(), &qh, ());
+    layer.set_anchor(zwlr_layer_surface_v1::Anchor::Top |
+        zwlr_layer_surface_v1::Anchor::Bottom | zwlr_layer_surface_v1::Anchor::Right);
+    layer.set_size(PANEL_WIDTH as u32, 0);
+    layer.set_exclusive_zone(-1); // Do not resize the game surface.
+    layer.set_keyboard_interactivity(0); // Do not steal keyboard focus.
+    surface.commit(); // No buffer until first Configure.
+
+    let mut app = App {
+        surface, layer, shm, pool: None, empty: None, panel: None, backing: None,
+        configured: false, closed: false, width: PANEL_WIDTH, height: 720, drawn: None,
+    };
+    while !app.closed {
+        queue.roundtrip(&mut app)?;
+        app.show(visible.load(Ordering::Acquire));
+        thread::sleep(Duration::from_millis(50));
+    }
+    // Compositor or layer-shell closed our surface; free all resources.
+    app.layer.destroy();
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn opaque_panel_and_fully_transparent_idle_surface() {
+        let transparent = paint(32, 64, false);
+        let panel = paint(32, 64, true);
+        assert!(transparent.iter().all(|b| *b == 0));
+        assert_eq!(panel.len(), 32 * 64 * 4);
+        assert!(panel.chunks_exact(4).any(|p| p[3] > 0));
+    }
+}
