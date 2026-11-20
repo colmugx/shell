@@ -15,6 +15,31 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+// The signal handler does only a lock-free atomic store. The main event loop
+// performs all socket cleanup and game-process termination outside the handler.
+static SIGNAL_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+const SIGINT: i32 = 2;
+const SIGTERM: i32 = 15;
+
+extern "C" fn request_shutdown(_signal: i32) {
+    SIGNAL_SHUTDOWN.store(true, Ordering::Release);
+}
+
+fn install_shutdown_handlers() -> io::Result<()> {
+    unsafe extern "C" {
+        fn signal(signum: i32, handler: usize) -> usize;
+    }
+    // SAFETY: libc signal() is called before the daemon starts worker threads.
+    // Its callbacks only perform an atomic store; signal errors are checked.
+    for number in [SIGINT, SIGTERM] {
+        if unsafe { signal(number, request_shutdown as usize) } == usize::MAX {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
 const MAX_LINE: usize = 256;
 const MAX_CLIENTS: usize = 32;
 const MAX_WATCHERS: usize = 16;
@@ -206,7 +231,7 @@ fn run(socket: &Path, game: Option<GameConfig>) -> io::Result<()> {
     eprintln!("pokshelld ready socket={}", socket.display());
 
     let result = (|| -> io::Result<()> {
-        while !shutdown.load(Ordering::Acquire) {
+        while !shutdown.load(Ordering::Acquire) && !SIGNAL_SHUTDOWN.load(Ordering::Acquire) {
             match listener.accept() {
                 Ok((mut stream, _)) => {
                     if active.fetch_add(1, Ordering::AcqRel) >= MAX_CLIENTS {
@@ -234,6 +259,9 @@ fn run(socket: &Path, game: Option<GameConfig>) -> io::Result<()> {
         Ok(())
     })();
 
+    // Stop WATCH subscribers on every exit path, including external signals.
+    shutdown.store(true, Ordering::Release);
+    // QUIT, SIGINT and SIGTERM stop the game before this daemon exits.
     // QUIT stops the game before this daemon process exits. Do not rely on
     // worker-thread destructors: process exit does not wait for threads.
     if let Ok(mut state) = service.lock() {
@@ -250,7 +278,7 @@ fn main() {
         eprintln!("{reason}");
         std::process::exit(2);
     });
-    if let Err(err) = run(&socket, game) {
+    if let Err(err) = install_shutdown_handlers().and_then(|()| run(&socket, game)) {
         eprintln!("pokshelld: {err}");
         std::process::exit(1);
     }
