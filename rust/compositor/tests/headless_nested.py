@@ -9,7 +9,6 @@ Does not assert visible pixels, games, DRM/KMS, or GPU acceleration.
 """
 import os
 from pathlib import Path
-import re
 import subprocess
 import tempfile
 import time
@@ -76,8 +75,11 @@ with tempfile.TemporaryDirectory(prefix="pokcomp-nested-") as dirname:
     sway_log = root / "sway.log"
     comp_log = root / "pokcomp.log"
     layer_log = root / "layer.log"
+    daemon_log = root / "daemon.log"
+    daemon_env = None
     sway = spawn(["sway", "-c", str(conf), "--unsupported-gpu"], env, sway_log)
     compositor = None
+    daemon = None
     layer = None
     try:
         host_socket = wait_for(
@@ -102,18 +104,61 @@ with tempfile.TemporaryDirectory(prefix="pokcomp-nested-") as dirname:
         )
         assert compositor.poll() is None
         layer_env = {**nested_env, "WAYLAND_DISPLAY": "pokshell-test"}
+        daemon = spawn(
+            ["../../rust/target/debug/pokshelld", "--game", "/usr/bin/weston-simple-shm"],
+            layer_env, daemon_log,
+        )
+        wait_for(
+            lambda: (runtime / "pokshell.sock").is_socket(),
+            daemon, daemon_log, "pokshelld session daemon",
+        )
+
+        # Subscribe to actual game/overlay state. Never force --show.
         layer = spawn(
-            ["../../graphics/wayland-layer/target/debug/pokshell-layer", "--show"],
+            ["../../graphics/wayland-layer/target/debug/pokshell-layer"],
             layer_env, layer_log,
         )
         wait_for(
             lambda: "pokshell-layer configured" in layer_log.read_text(errors="replace"),
             layer, layer_log, "pokshell layer client",
         )
+
+        def control(*args):
+            result = subprocess.run(
+                ["../../rust/target/debug/pokctl", *args],
+                env=layer_env, capture_output=True, text=True, timeout=8,
+            )
+            if result.returncode:
+                raise RuntimeError(
+                    f"pokctl {args} failed: {result.stdout} {result.stderr}"
+                )
+            return result.stdout
+
+        assert "OK GAME START" in control("GAME", "START")
+        wait_for(
+            lambda: "pokcomp: game render elements present" in comp_log.read_text(errors="replace"),
+            compositor, comp_log, "nested game render elements",
+        )
+        assert "mode=game" in control("STATUS")
+
+        assert "OK OVERLAY OPEN" in control("OVERLAY", "OPEN")
+        wait_for(
+            lambda: "pokcomp: layer render elements present" in comp_log.read_text(errors="replace"),
+            compositor, comp_log, "nested layer render elements",
+        )
+        assert "overlay=1" in control("STATUS")
+        assert "mode=game" in control("STATUS")
+        assert "OK OVERLAY CLOSED" in control("OVERLAY", "CLOSE")
+        assert "mode=game" in control("STATUS")
+        assert "OK GAME STOP" in control("GAME", "STOP")
+        assert "mode=home" in control("STATUS")
+        assert "OK QUIT" in control("QUIT")
         assert compositor.poll() is None, comp_log.read_text(errors="replace")[-9000:]
         assert layer.poll() is None
-        print("PASS: Smithay nested server configured an actual layer-shell client")
+        print("PASS: native XDG window and independent overlay coexist on pokcomp")
+        print("PASS: game process survives overlay open/close")
     finally:
         stop(layer)
+        stop(daemon)
         stop(compositor)
         stop(sway)

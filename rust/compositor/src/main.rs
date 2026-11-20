@@ -101,6 +101,7 @@ impl XdgShellHandler for PokCompositor {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState { &mut self.xdg_shell_state }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
+        eprintln!("pokcomp: new xdg_toplevel");
         surface.with_pending_state(|state| {
             state.states.set(xdg_toplevel::State::Activated);
         });
@@ -248,6 +249,8 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
     println!("WAYLAND_DISPLAY={socket_name}");
     eprintln!("pokcomp: nested compositor listening on {socket_name}");
     let start = Instant::now();
+    let mut seen_game_frame = false;
+    let mut seen_layer_frame = false;
 
     loop {
         let status = host.dispatch_new_events(|event| match event {
@@ -309,10 +312,20 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
                 ));
             }
             // All XDG toplevels overlap at the origin for this experiment.
+            let layer_element_count = elements.len();
             for surface in state.xdg_shell_state.toplevel_surfaces() {
                 elements.extend(render_elements_from_surface_tree(
                     renderer, surface.wl_surface(), (0, 0), 1.0, 1.0, Kind::Unspecified,
                 ));
+            }
+            let game_element_count = elements.len() - layer_element_count;
+            if layer_element_count > 0 && !seen_layer_frame {
+                eprintln!("pokcomp: layer render elements present");
+                seen_layer_frame = true;
+            }
+            if game_element_count > 0 && !seen_game_frame {
+                eprintln!("pokcomp: game render elements present");
+                seen_game_frame = true;
             }
 
             let mut frame = renderer.render(&mut framebuffer, size, Transform::Flipped180)?;

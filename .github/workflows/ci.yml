@@ -98,7 +98,10 @@ jobs:
         if: matrix.runner == 'ubuntu-24.04'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends sway libgl1-mesa-dri
-      - name: Smithay nested layer configure smoke test
+          sudo apt-get install -y --no-install-recommends sway weston libgl1-mesa-dri
+      - name: Build existing pokshelld and pokctl for integration
+        if: matrix.runner == 'ubuntu-24.04'
+        run: cargo build --manifest-path ../../rust/Cargo.toml --workspace --locked
+      - name: Smithay nested game and layer integration test
         if: matrix.runner == 'ubuntu-24.04'
         run: python3 tests/headless_nested.py
