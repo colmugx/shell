@@ -41,7 +41,7 @@ use wayland_server::{
     protocol::{wl_buffer, wl_surface::{self, WlSurface}},
     Client, ListeningSocket,
 };
-use winit::platform::pump_events::PumpStatus;
+use ::winit::platform::pump_events::PumpStatus;
 
 const HELP: &str = "pokcomp [--socket NAME]\n\
     Starts a nested Wayland compositor in a host Wayland/X11 window.\n\
