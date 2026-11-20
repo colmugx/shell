@@ -1,0 +1,17 @@
+[package]
+name = "pokcomp"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+rust-version = "1.88"
+description = "Experimental nested Wayland compositor for the pokshell Linux game session"
+
+# Deliberately isolated from rust/Cargo.lock until the Smithay baseline is stable.
+[workspace]
+
+[dependencies]
+smithay = { version = "=0.7.0", default-features = false, features = ["backend_winit", "wayland_frontend", "desktop"] }
+wayland-server = "0.31.13"
+wayland-protocols = { version = "0.32.13", features = ["server"] }
+winit = { version = "=0.31.0-beta.4", default-features = false, features = ["wayland", "wayland-dlopen", "x11"] }
+tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }

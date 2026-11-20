@@ -46,6 +46,15 @@ Watch state changes in a third terminal with `cargo run --bin pokctl -- WATCH`. 
 
 The standalone Rust client at [`graphics/wayland-layer`](graphics/wayland-layer) creates an independent wl_shm Layer Surface using the wlroots `zwlr_layer_shell_v1` protocol. It watches `pokshelld WATCH` for overlay state and switches between transparent/diagnostic buffers without taking input focus. This is a **Wayland protocol and layering experiment**, not a polished UI, full-screen game compositor or hardware firmware. It has compiled on Linux x86-64 / ARM64 and passed a **headless Sway layer-configure smoke test**, but a visible UTM game/overlay integration test is still pending. [Build and UTM test instructions](docs/wayland-transport.md).
 
+## Own compositor: first nested Smithay prototype
+
+`rust/compositor` now contains an **experimental Smithay-backed Wayland server**,
+separate from the proven `pokshelld` control plane and standalone
+`graphics/wayland-layer` client. The initial Winit/GLES backend draws XDG
+toplevels inside a host window. **No native DRM/KMS, layer-shell integration,
+UTM visible rendering, or interactive overlay is claimed.** See the
+[compositor build and manual test guide](docs/compositor.md).
+
 ## Historical C framebuffer experiment
 
 The root `src/`, `include/`, `CMakeLists.txt` and `tests/` are a disposable **Linux fbdev technical demonstration**, **not** the project's intended product UI or future architecture. It draws a software UI, runs a standalone test game and shares frames through a demo buffer.
