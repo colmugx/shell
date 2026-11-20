@@ -8,10 +8,10 @@ Evidence is tracked per implementation, per machine and per hardware reference.
 | Rust process supervision, termination grace, event subscription, fragmented IPC | `rust/` unit/integration tests; Actions run 44695342191 | CI passed on x86-64 / ARM64 |
 | Rust user session in Debian ARM64 / UTM | No local UTM boot log | Unverified |
 | Bootable Buildroot QEMU image | No QEMU boot log | Unverified |
-| Own DRM/KMS and Wayland compositor | Experimental Smithay XDG server plus wl_output and diagnostic wlr-layer-shell surface handling; no UTM game/overlay evidence, no DRM/KMS backend | Source added; runtime unverified |
+| Own DRM/KMS and Wayland compositor | Smithay nested Winit/GLES compositor; headless Sway-hosted CI runs actual XDG and Layer Shell clients; native DRM/KMS not implemented | Nested software CI verified; native backend pending |
 | Wayland layer-shell diagnostic surface | Rust wl_shm + zwlr_layer_shell_v1 client; Actions 44704676668, x86-64 headless Sway protocol test | Compiled on x86-64 / ARM64; headless protocol handshake passed |
 | UTM Wayland graphical session | No direct VM test evidence | Unverified |
-| Actual game overlay during arbitrary fullscreen SDL/GLES game | Only Rust overlay state, or legacy framebuffer demonstration | Not implemented |
+| Actual game overlay during arbitrary fullscreen SDL/GLES game | Headless CI verifies weston-simple-shm XDG render elements, visible/transparent Layer SHM commits and unchanged game PID; fullscreen SDL/GLES and UTM remain untested | Native SHM coexistence verified in headless CI; fullscreen/GLES/UTM unverified |
 | MoonBit/WAMR component execution | Not linked | Not implemented |
 | Production console UI, controller focus, dual screen | Not present | Not implemented |
 | H700, Duo Lite, RP6 physical-device boot / suspend / hardware acceleration | No test reports | Unverified |

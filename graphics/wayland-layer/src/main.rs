@@ -133,6 +133,7 @@ impl App {
             self.surface.damage_buffer(0, 0, self.width, self.height);
             self.surface.commit();
             self.drawn = Some(visible);
+            eprintln!("pokshell-layer buffer committed visible={}", u8::from(visible));
         }
     }
 }

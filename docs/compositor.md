@@ -73,6 +73,20 @@ connect to pokcomp, receive XDG configure events, submit buffers, and
 be drawn in the compositor's host window. A successful Rust build or
 CI test is **not** evidence of visible game frames in UTM.
 
+## CI evidence
+
+GitHub Actions runs a real headless Sway host, starts `pokcomp` as an
+independent nested Wayland **server**, uses `pokshelld` to launch
+`weston-simple-shm` as a separate native XDG client, and connects the
+existing `pokshell-layer` with a live WATCH subscription. The test checks
+that XDG game and layer render elements are produced, that layer buffers
+switch from transparent to visible and back, and that the game PID remains
+unchanged across the overlay transition.
+
+This is **automated software-renderer integration**; it does not prove
+pixels on a physical display, hardware GPU acceleration, UTM performance,
+pointer/controller focus, or a DRM/KMS-native shell.
+
 ## Deliberate limits
 
 - **Nested only:** no DRM/KMS/GBM/libseat/udev session and no device boot test.
