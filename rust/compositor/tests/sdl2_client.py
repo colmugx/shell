@@ -6,16 +6,17 @@ Reproduces SDL's backend choice in a hostile KDE/X11 environment.
 Uses wl_shm via SDL_GetWindowSurface, intentionally NOT OpenGL/dmabuf.
 """
 import ctypes
-import ctypes.util
 import json
 import os
 import sys
 import time
 
-name = ctypes.util.find_library("SDL2")
-if not name:
-    raise SystemExit("SDL2 not installed")
-sdl = ctypes.CDLL(name)
+# Debian/Ubuntu provide this stable SDL2 ABI soname even when the
+# development package (and its linker metadata) is not installed.
+try:
+    sdl = ctypes.CDLL("libSDL2-2.0.so.0")
+except OSError as err:
+    raise SystemExit(f"SDL2 runtime library unavailable: {err}") from err
 sdl.SDL_Init.argtypes = [ctypes.c_uint32]
 sdl.SDL_Init.restype = ctypes.c_int
 sdl.SDL_GetError.restype = ctypes.c_char_p
