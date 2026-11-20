@@ -37,8 +37,8 @@ cd "$HOME/workspace"
 git clone https://github.com/colmugx/shell.git 2>/dev/null || true
 cd shell
 git fetch origin
-git switch feat/session-input-and-clean-shutdown \
-    || git switch -c feat/session-input-and-clean-shutdown --track origin/feat/session-input-and-clean-shutdown
+git switch main
+git pull --ff-only
 
 cargo build --manifest-path rust/compositor/Cargo.toml
 cargo build --manifest-path graphics/wayland-layer/Cargo.toml
@@ -47,8 +47,9 @@ cargo build --manifest-path graphics/wayland-layer/Cargo.toml
 command -v /usr/games/supertux || ls -l /usr/games/supertux
 ```
 
-The above branch is the **development/PR branch**. After merge it is
-appropriate to switch back to `main` instead of tracking the PR branch.
+This sprint commits directly to `main`; no PR checkout is required.
+If `git switch main` complains about uncommitted changes, save those
+changes first rather than resetting or discarding them.
 
 ## Four Konsole terminals
 
@@ -78,7 +79,8 @@ export SDL_VIDEODRIVER=wayland
 
 Expected: `pokshelld ready socket=/run/user/<UID>/pokshell.sock`.
 The required `--game-wayland-display` explicitly targets pokcomp's
-own socket (use A's actual printed name). It overrides inherited
+own socket (replace `pokshell-1` in both arguments with A's actual
+printed socket name). It overrides inherited
 `WAYLAND_DISPLAY` and `SDL_VIDEODRIVER`, removes `DISPLAY` and
 `WAYLAND_SOCKET`, and refuses GAME START when the nested socket is missing.
 The host KDE/KWin socket must **not** be used as the game socket.
@@ -131,6 +133,35 @@ layer with `--interactive` only supports **click-to-close**, not a
 complete menu or gamepad interface.
 
 Finally, Ctrl+C the compositor (A) and layer client (C) if still running.
+
+## Troubleshooting a SuperTux window that opens outside Smithay
+
+1. Verify B was started with `--game-wayland-display pokshell-...`.
+   **Restart B** after changing flags; restarting only SuperTux cannot
+   change the daemon's configured launcher.
+2. In D, run `pokctl STATUS`, note the PID, and inspect the game's
+   environment from the same user session:
+
+```sh
+GAME_PID=$(./rust/target/debug/pokctl STATUS |
+    sed -n 's/.*pid=\\([0-9][0-9]*\\).*/\\1/p')
+test -n "$GAME_PID" && tr '\\0' '\\n' <"/proc/$GAME_PID/environ" |
+    grep -E '^(WAYLAND_DISPLAY|SDL_VIDEODRIVER|DISPLAY|WAYLAND_SOCKET)='
+```
+
+Expected: `WAYLAND_DISPLAY=pokshell-...`,
+`SDL_VIDEODRIVER=wayland`, and **no** `DISPLAY` or
+`WAYLAND_SOCKET` entries. (The reported supervisor PID may be a
+wrapper rather than the actual renderer; inspect its descendants if needed.)
+
+3. A's terminal should report `pokcomp: new xdg_toplevel` and
+   `pokcomp: game render elements present` after the game starts.
+   If these are absent, the game is not submitting a rendered XDG
+   surface to pokcomp.
+4. A black game window **inside Smithay** is a different issue from a
+   separate KDE game window. It indicates a possible SDL OpenGL/EGL,
+   dmabuf or compositor render-path limitation; capture game stderr and
+   `pokcomp` logs, and do not mark the graphics acceptance as passed.
 
 ## Acceptance checklist
 

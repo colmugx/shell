@@ -55,7 +55,10 @@ toplevels and diagnostic Layer Surfaces inside a host window. A software
 headless CI integration test exercises a native XDG client, daemon IPC
 and overlay visibility changes without terminating the game. An experimental
 `--interactive` layer mode enables click-to-close, and nested compositor
-pointer routing now honors surface input regions. **No native
+pointer routing now honors surface input regions. Game launch with
+`pokshelld --game-wayland-display pokshell-N` explicitly targets the
+nested compositor's socket and disables KDE/X11 fallback (see
+[UTM acceptance](docs/kde-utm-acceptance.md)). **No native
 DRM/KMS, UTM visible rendering, or interactive overlay is claimed.** See the
 [compositor build and manual test guide](docs/compositor.md).
 
