@@ -1,7 +1,7 @@
 # Experimental pokshell-owned compositor: nested Smithay probe
 
 This milestone adds `rust/compositor` (`pokcomp`), a **Wayland server**
-implementing basic `wl_compositor`, `wl_shm`, `wl_seat` and `xdg_shell`
+implementing basic `wl_compositor`, `wl_shm`, `wl_seat`, `wl_output`, `xdg_shell`, and `zwlr_layer_shell_v1`
 handling through Smithay. Its Winit/GLES backend draws client surfaces into
 a **host Wayland or X11 window**. This is not the final DRM/KMS native session.
 
@@ -45,15 +45,28 @@ export SDL_VIDEODRIVER=wayland
 rust/target/debug/pokshelld --game /usr/games/supertux
 ```
 
-In terminal C:
+In terminal C, start the existing separate Wayland Layer Client against
+the **same nested compositor socket**. It uses the daemon's WATCH stream:
+
+```sh
+cd shell
+export WAYLAND_DISPLAY=pokshell-1
+cargo build --manifest-path graphics/wayland-layer/Cargo.toml
+graphics/wayland-layer/target/debug/pokshell-layer
+```
+
+In terminal D, control the game and overlay:
 
 ```sh
 cd shell
 rust/target/debug/pokctl GAME START
 rust/target/debug/pokctl STATUS
+rust/target/debug/pokctl OVERLAY OPEN
+rust/target/debug/pokctl OVERLAY CLOSE
 rust/target/debug/pokctl GAME STOP
 rust/target/debug/pokctl QUIT
 ```
+
 
 **Expected only after manual verification**: a native Wayland game can
 connect to pokcomp, receive XDG configure events, submit buffers, and
@@ -63,9 +76,11 @@ CI test is **not** evidence of visible game frames in UTM.
 ## Deliberate limits
 
 - **Nested only:** no DRM/KMS/GBM/libseat/udev session and no device boot test.
-- No `zwlr_layer_shell_v1` support yet. The existing
-  `graphics/wayland-layer` client will **not** work against this socket.
-  Continue using Sway/labwc for that independent layer-shell probe.
+- The compositor now advertises `wl_output` and a first
+  `zwlr_layer_shell_v1` implementation. It configures and renders a
+  **single diagnostic right-side overlay** above XDG game surfaces; generalized
+  layer policy, margins, layer stacking, shell surfaces on multiple monitors,
+  and independent overlay input focus remain unimplemented.
 - XDG toplevels overlap at the same origin. No placement, fullscreen
   negotiation, popup behavior, correct pointer hit testing, output scale,
   gamepad, touch, window occlusion, or multi-display policy.
@@ -85,9 +100,11 @@ CI test is **not** evidence of visible game frames in UTM.
    real nested graphical session.
 2. Add `wl_output`, xdg surface placement and proper pointer/keyboard
    focus routing before claiming practical game controls.
-3. Add a separate overlay surface with independent interactivity; retain
-   game PID and frame callbacks across `OVERLAY OPEN/CLOSE`.
-4. Add native Linux DRM/KMS backend with seat management, then verify
+3. Validate the **same compositor** drawing SuperTux and the diagnostic layer
+   while the game PID and frame callbacks survive `OVERLAY OPEN/CLOSE`.
+4. Implement independent overlay input focus (rather than no-focus diagnostic
+   surface) and hit testing without killing or hiding the game.
+5. Add native Linux DRM/KMS backend with seat management, then verify
    actual UTM graphics and device support separately.
 
 Smithay minimal example attribution and MIT notice:
