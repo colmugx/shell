@@ -67,7 +67,7 @@ fn paint(width: i32, height: i32, visible: bool) -> Vec<u8> {
                 (72, 172, 186, 245)
             } else if (y >= 52 && y < 54) || (y >= 128 && y < 130) {
                 (43, 67, 87, 237)
-            } else if (y >= 75 && y < 108 && x >= 18 && x < 300) {
+            } else if y >= 75 && y < 108 && x >= 18 && x < 300 {
                 (37, 70, 80, 232)
             } else if y >= 144 && y < 174 && x >= 18 && x < 300 {
                 (31, 53, 72, 232)
@@ -207,7 +207,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         zwlr_layer_surface_v1::Anchor::Bottom | zwlr_layer_surface_v1::Anchor::Right);
     layer.set_size(PANEL_WIDTH as u32, 0);
     layer.set_exclusive_zone(-1); // Do not resize the game surface.
-    layer.set_keyboard_interactivity(0); // Do not steal keyboard focus.
+    layer.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None); // Do not steal keyboard focus.
     surface.commit(); // No buffer until first Configure.
 
     let mut app = App {
