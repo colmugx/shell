@@ -160,6 +160,7 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for App {
                 state.width = PANEL_WIDTH;
                 state.height = if height == 0 { 720 } else { height as i32 };
                 state.configured = true;
+                eprintln!("pokshell-layer configured width={} height={}", state.width, state.height);
                 if let Err(err) = state.allocate(qh) {
                     eprintln!("pokshell-layer: allocate: {err}");
                     state.closed = true;
