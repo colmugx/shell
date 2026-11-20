@@ -15,9 +15,9 @@ Game-first Linux console shell research project. Work in progress.
 
 ## Current implementation
 
-The **Linux framebuffer alpha** is a native C technical prototype. It runs a fullscreen menu on `/dev/fb0`, supervises a separate sample-game process, reads evdev input, and draws a software overlay over a shared-memory demo game. It is **not** yet a PocketJS-based UI, a DRM/KMS game compositor, or a boot-tested hardware firmware.
+The **Linux framebuffer alpha** is a native C technical prototype (a deliberately temporary visual test, not the intended polished UI). It runs a fullscreen menu on `/dev/fb0`, supervises a separate sample-game process, reads evdev input, and draws a software overlay over a shared-memory demo game. It is **not** yet a PocketJS-based UI, a DRM/KMS game compositor, or a boot-tested hardware firmware.
 
-**Linux build and test** (once the `src/`, `include/`, and `tests/` files are present):
+**Linux build and test** (sources are checked into the repository):
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -26,7 +26,7 @@ POCKET_BIN_DIR="$PWD/build" python3 tests/test_runtime.py
 ./build/pocket-session --headless --frames 3 --screenshot /tmp/pokshell.ppm
 ```
 
-The Debian/UTM integration is documented in [docs/utm.md](docs/utm.md). Buildroot recipes are experimental and have not been boot-verified. Do not flash the QEMU root filesystem onto a handheld.
+This alpha does **not** include a prebuilt flashable ROM.\n\nThe Debian/UTM integration is documented in [docs/utm.md](docs/utm.md). Buildroot recipes are experimental and have not been boot-verified. Do not flash the QEMU root filesystem onto a handheld.
 
 ## Governance
 
