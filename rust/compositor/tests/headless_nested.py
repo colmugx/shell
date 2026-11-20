@@ -8,6 +8,8 @@ existing client receives configure from *pokshell*, not from Sway.
 Does not assert visible pixels, games, DRM/KMS, or GPU acceleration.
 """
 import os
+import sys
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -104,10 +106,27 @@ with tempfile.TemporaryDirectory(prefix="pokcomp-nested-") as dirname:
         )
         assert compositor.poll() is None
         layer_env = {**nested_env, "WAYLAND_DISPLAY": "pokshell-test"}
-        daemon = spawn(
-            ["../../rust/target/debug/pokshelld", "--game", "/usr/bin/weston-simple-shm"],
-            layer_env, daemon_log,
-        )
+        sdl_mode = "--sdl2" in sys.argv
+        if sdl_mode:
+            game_command = [
+                "../../rust/target/debug/pokshelld",
+                "--game", sys.executable,
+                "--game-arg", "tests/sdl2_client.py",
+            ]
+        else:
+            game_command = [
+                "../../rust/target/debug/pokshelld",
+                "--game", "/usr/bin/weston-simple-shm",
+            ]
+        game_command.extend(["--game-wayland-display", "pokshell-test"])
+        # Inject plausible KDE/XWayland variables into the daemon itself:
+        # only the launched child may have these routes disabled.
+        daemon_hostile = {
+            **layer_env,
+            "DISPLAY": ":77",
+            "SDL_VIDEODRIVER": "x11",
+        }
+        daemon = spawn(game_command, daemon_hostile, daemon_log)
         wait_for(
             lambda: (runtime / "pokshell.sock").is_socket(),
             daemon, daemon_log, "pokshelld session daemon",
@@ -135,6 +154,16 @@ with tempfile.TemporaryDirectory(prefix="pokcomp-nested-") as dirname:
             return result.stdout
 
         assert "OK GAME START" in control("GAME", "START")
+        if sdl_mode:
+            proof_path = runtime / "pokshell-sdl-proof.json"
+            wait_for(
+                proof_path.exists, daemon, daemon_log, "SDL2 Wayland proof",
+            )
+            proof = json.loads(proof_path.read_text())
+            assert proof["driver"] == "wayland", proof
+            assert proof["socket"] == "pokshell-test", proof
+            assert proof["x11"] is None, proof
+            assert proof["video"] == "wayland", proof
         wait_for(
             lambda: "pokcomp: game render elements present" in comp_log.read_text(errors="replace"),
             compositor, comp_log, "nested game render elements",
