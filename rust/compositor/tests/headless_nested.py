@@ -115,7 +115,7 @@ with tempfile.TemporaryDirectory(prefix="pokcomp-nested-") as dirname:
 
         # Subscribe to actual game/overlay state. Never force --show.
         layer = spawn(
-            ["../../graphics/wayland-layer/target/debug/pokshell-layer"],
+            ["../../graphics/wayland-layer/target/debug/pokshell-layer", "--interactive"],
             layer_env, layer_log,
         )
         wait_for(
