@@ -204,7 +204,8 @@ fn main() {
     };
     let strict = opts.strict;
     match run(opts) {
-        Ok(true) | Ok(false) if !strict => {}
+        Ok(true) => {}
+        Ok(false) if !strict => {}
         Ok(false) => std::process::exit(3),
         Err(err) => { eprintln!("pokdrm: {err}"); std::process::exit(1); }
     }
