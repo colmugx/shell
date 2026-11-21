@@ -95,7 +95,8 @@ also removes the daemon's own socket.
 cd ~/workspace/shell
 export WAYLAND_DISPLAY=pokshell-1  # same value as B, not KDE's host socket
 ./graphics/wayland-layer/target/debug/pokshell-layer \
-    --socket "$XDG_RUNTIME_DIR/pokshell.sock" --interactive
+    --socket "$XDG_RUNTIME_DIR/pokshell.sock" \
+    --interactive --keyboard-interactive
 ```
 
 Expected: layer Configure log. While overlay is closed it is transparent
@@ -128,9 +129,27 @@ You can also test command-driven visibility:
 ```
 
 Check that a click in the game area focuses the game. Press a simple
-game navigation key, or use the mouse in the game. The diagnostic
-layer with `--interactive` only supports **click-to-close**, not a
-complete menu or gamepad interface.
+game navigation key, or use the mouse in the game.
+
+**New keyboard focus acceptance (2026-11-21 implementation; UTM still
+unverified):**
+
+1. With `OVERLAY OPEN`, **click the visible panel to give it on-demand
+   keyboard focus** (this also immediately closes it in the diagnostic
+   click-to-close mode, so a second `OVERLAY OPEN` is needed).
+2. For a keyboard-only dismissal test, keep the pointer over the panel,
+   open it again, and press **Escape** after the panel is focused; expect
+   `pokshell-layer interactive close requested via=escape` in C.
+3. Confirm the game PID remains unchanged after the panel closes and
+   **game keyboard input responds again** without restarting SuperTux.
+4. A panel without `--keyboard-interactive` must remain keyboard
+   click-through, preserving the previous behavior.
+
+The current diagnostic panel has a deliberately simple click-to-close
+action, which can make Escape testing awkward on real mouse input.
+If clicking closes before Escape reaches the layer, report this as an
+unverified keyboard-focus subtest, *not* as proof that Escape works.
+A dedicated focus-only action is a later UI milestone.
 
 Finally, Ctrl+C the compositor (A) and layer client (C) if still running.
 
@@ -173,6 +192,8 @@ wrapper rather than the actual renderer; inspect its descendants if needed.)
 - [ ] The game continues responding while the overlay appears.
 - [ ] Clicking the visible panel closes it; the game PID remains unchanged.
 - [ ] Clicking the game redirects pointer and keyboard input to the game.
+- [ ] `--keyboard-interactive` panel receives Escape and closes via IPC;
+      after the layer hides, keyboard focus returns to SuperTux.
 - [ ] Ctrl+C on B removes `$XDG_RUNTIME_DIR/pokshell.sock`.
 - [ ] Re-running B does not require manual deletion of the old socket.
 
@@ -193,3 +214,20 @@ variables or unrestricted service logs without reviewing them.
 **Not accepted by this procedure:** native DRM/KMS, hardware GLES/Vulkan,
 Wayland dmabuf zero-copy, SuperTux fullscreen negotiation, gamepad/touch
 routing, dual-display policy or handheld firmware.
+
+## XDG fullscreen/resize acceptance
+
+When the SuperTux menu is visible inside the Smithay window:
+
+1. Resize the **outer Smithay KDE window** and verify the game resizes
+   rather than remaining confined to a small top-left rectangle.
+2. If SuperTux offers a fullscreen toggle, use it and verify that the
+   **inner game** fills pokcomp's rendering extent, without causing a
+   new KDE game window or stealing KWin's DRM/KMS device.
+3. Toggle back and repeat `OVERLAY OPEN/CLOSE`; the overlay should
+   remain on the right side and game PID should remain unchanged.
+4. Run `pokctl QUIT` and verify that Smithay still runs independently.
+
+CI has passed a software SDL2 fullscreen XDG request test; the real
+SuperTux/OpenGL fullscreen and resize behavior remains a separate
+UTM manual acceptance gate.
