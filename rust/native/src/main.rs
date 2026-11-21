@@ -5,6 +5,7 @@
 //! This probes the same lower stack a native compositor will consume.
 
 mod kms;
+mod seat;
 
 use kms::Candidate;
 use smithay::{
@@ -52,7 +53,7 @@ fn install_signals() -> std::io::Result<()> {
 
 #[derive(Default)]
 struct MonitorState {
-    active: bool,
+    gate: seat::Gate,
     device_events: usize,
     input_events: usize,
 }
@@ -135,7 +136,7 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
     // Process libseat activation events. KMS devices must never be
     // accessed before the active seat grant is delivered.
     let mut seat_events: EventLoop<MonitorState> = EventLoop::try_new()?;
-    let mut state = MonitorState { active: session.is_active(), ..Default::default() };
+    let mut state = MonitorState { gate: seat::Gate::new(session.is_active()), ..Default::default() };
 
     let mut libinput = Libinput::new_with_udev::<LibinputSessionInterface<LibSeatSession>>(
         session.clone().into());
@@ -154,14 +155,14 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
     seat_events.handle().insert_source(notifier, move |event, _, state| {
         match event {
             SessionEvent::ActivateSession => {
-                state.active = true;
+                state.gate.activate();
                 if let Err(err) = libinput.resume() {
                     eprintln!("poknative: libinput resume error={err:?}");
                 }
                 eprintln!("poknative: seat activated");
             }
             SessionEvent::PauseSession => {
-                state.active = false;
+                state.gate.pause();
                 libinput.suspend();
                 eprintln!("poknative: seat paused (device rendering forbidden)");
             }
@@ -173,6 +174,7 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
     eprintln!("poknative: udev seat devices={known:?}");
     seat_events.handle().insert_source(udev, |event, _, state| {
         state.device_events += 1;
+        state.gate.hotplug();
         match event {
             UdevEvent::Added { path, .. } => eprintln!("poknative: hotplug added {}", path.display()),
             UdevEvent::Removed { device_id } => eprintln!("poknative: hotplug removed {device_id}"),
@@ -257,6 +259,9 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
     // of this renderer; we do not mutate its GL state outside Smithay.
     let _renderer = unsafe { GlesRenderer::new(context)? };
     println!("gles_renderer_initialized=yes");
+    // No KMS scanout is configured yet; do NOT call gate.configured()
+    // until a real atomic/legacy modeset and buffer ownership are proven.
+    println!("kms_submit_permitted={}", state.gate.may_submit());
     println!("input_backend=libinput drm_hotplug=udev seat_events=libseat");
     println!("next_gate=GBM scanout buffers + per-CRTC DrmOutputManager + vblank event loop (not yet wired)");
 
@@ -266,13 +271,13 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
         println!("native_monitoring={}s (Ctrl+C to exit)", seconds);
         while Instant::now() < until && !SHUTDOWN.load(Ordering::Acquire) {
             seat_events.dispatch(Duration::from_millis(200), &mut state)?;
-            if !state.active {
+            if !state.gate.active() {
                 // A native renderer must avoid submitting to KMS while
                 // the seat is paused. This probe does not render.
             }
         }
         println!("native_events drm_hotplug={} input_events={} seat_active={}",
-            state.device_events, state.input_events, state.active);
+            state.device_events, state.input_events, state.gate.active());
     }
     // Drop compositor resources before libseat session; do not modify
     // planes or modes, and do not interfere with KWin.
