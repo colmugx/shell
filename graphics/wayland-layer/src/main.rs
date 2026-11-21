@@ -2,8 +2,10 @@
 //! Temporary, actual Wayland layer-shell transport: not the final UI or compositor.
 //! A separate Wayland game surface continues running underneath this overlay.
 mod menu;
+mod joystick;
 
 use menu::{MenuAction, MenuState};
+use joystick::MenuInput;
 use std::env;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -103,6 +105,7 @@ struct App {
     backing: Option<File>,
     menu: Option<MenuState>,
     hovered_menu_row: Option<usize>,
+    joystick_rx: Option<Receiver<MenuInput>>,
     action_tx: Sender<(MenuAction, Result<(), String>)>,
     action_rx: Receiver<(MenuAction, Result<(), String>)>,
     action_pending: bool,
@@ -184,6 +187,31 @@ impl App {
             let result = run_menu_commands(&socket, action);
             let _ = sender.send((action, result));
         });
+    }
+
+    fn poll_joystick(&mut self) {
+        // The joystick is entirely optional and decoded on a worker. Drain
+        // while hidden so stale presses cannot select an action on reopen.
+        let mut input = Vec::new();
+        if let Some(receiver) = &self.joystick_rx {
+            while let Ok(action) = receiver.try_recv() {
+                input.push(action);
+                if input.len() >= 64 { break; }
+            }
+        }
+        if self.drawn.map(|x| x.0) != Some(true) { return; }
+        for action in input {
+            let Some(menu) = &mut self.menu else { return; };
+            let selected = match action {
+                MenuInput::Up => { menu.previous(); None }
+                MenuInput::Down => { menu.next(); None }
+                MenuInput::Confirm => Some(menu.current()),
+                MenuInput::Back => Some(MenuAction::Resume),
+            };
+            if let Some(selected) = selected {
+                self.request_menu_action(selected, "joystick");
+            }
+        }
     }
 
     fn poll_action(&mut self) {
@@ -374,6 +402,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut interactive = false;
     let mut keyboard_interactive = false;
     let mut menu_mode = false;
+    let mut joystick_path: Option<PathBuf> = None;
     let mut args = env::args_os().skip(1);
     while let Some(arg) = args.next() {
         match arg.to_str() {
@@ -389,13 +418,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 keyboard_interactive = true;
                 interactive = true;
             },
+            Some("--joystick") => {
+                joystick_path = Some(PathBuf::from(args.next().ok_or("--joystick needs a path")?));
+            },
             Some("--help") => {
-                println!("pokshell-layer [--socket PATH] [--show] [--interactive] [--keyboard-interactive] [--menu]\nRequires Wayland compositor with wlr-layer-shell-v1");
+                println!("pokshell-layer [--socket PATH] [--show] [--interactive] [--keyboard-interactive] [--menu] [--joystick /dev/input/js0]\nRequires Wayland compositor with wlr-layer-shell-v1");
                 return Ok(());
             }
             _ => return Err(format!("unknown argument: {}", arg.to_string_lossy()).into()),
         }
     }
+    if joystick_path.is_some() && !menu_mode {
+        return Err("--joystick requires --menu".into());
+    }
+    let joystick_rx = if let Some(path) = joystick_path {
+        let (tx, rx) = mpsc::channel();
+        joystick::start(path, tx)?;
+        Some(rx)
+    } else {
+        None
+    };
     let visible = Arc::new(AtomicBool::new(force_visible));
     if !force_visible { subscribe(socket.clone(), Arc::clone(&visible)); }
 
@@ -431,12 +473,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         interactive, keyboard_interactive, control_socket: socket,
         shm, pool: None, empty: None, panel: None, menu_buffers: Vec::new(),
         backing: None, menu: menu_mode.then(MenuState::default), hovered_menu_row: None,
+        joystick_rx,
         action_tx, action_rx, action_pending: false,
         configured: false, closed: false, width: PANEL_WIDTH, height: 720, drawn: None,
     };
     while !app.closed {
         queue.roundtrip(&mut app)?;
         app.poll_action();
+        app.poll_joystick();
         app.show(visible.load(Ordering::Acquire), &qh);
         thread::sleep(Duration::from_millis(50));
     }

@@ -260,3 +260,29 @@ Manual UTM gate:
 
 **Not yet implemented or accepted:** physical gamepad navigation, gamepad
 input capture/exclusivity, multi-display, native DRM/KMS.
+
+## Optional Linux joystick navigation
+
+For a regular-user test, first check which joystick node exists:
+
+```sh
+ls -l /dev/input/js* 2>/dev/null || true
+id -nG
+```
+
+On Linux with a joystick device exposed to the VM, start the menu as:
+
+```sh
+./graphics/wayland-layer/target/debug/pokshell-layer \
+    --socket "$XDG_RUNTIME_DIR/pokshell.sock" \
+    --menu --joystick /dev/input/js0
+```
+
+The prototype maps typical joystick axis 1 or 7 to menu Up/Down with
+edge-triggered deadzone, button 0/A or 7/Start to Confirm and button 1/B
+to Resume. Exact physical button layouts vary; `/dev/input/js0` may not
+exist in UTM. The device is opened without root privileges or exclusive
+EVIOCGRAB. **Controller events can still reach the game underneath the
+overlay**, so it is *not* a verified production controller-focus policy.
+Do not grant root privileges or broaden device permissions just to run
+this optional test.
