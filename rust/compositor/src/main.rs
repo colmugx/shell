@@ -50,6 +50,10 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
         });
         if let PumpStatus::Exit(_) = status { return Ok(()); }
         server.dispatch()?;
+        // No game/overlay commit and no host resize: do not allocate,
+        // render or submit another GPU framebuffer. Clients schedule their
+        // next frame only after the previous presentation callback.
+        if !server.dirty() { continue; }
         let size = backend.window_size();
         let damage = Rectangle::from_size(size);
         {
