@@ -72,6 +72,21 @@ accidentally attaching to the KDE host.
 No native DRM/KMS, exclusive gamepad focus or handheld graphics is claimed.** See the
 [compositor build and manual test guide](docs/compositor.md).
 
+## Native Linux graphics work
+
+The project is also implementing a **non-nested Linux display backend**:
+
+- `rust/apps/pokdrm`: read-only `/sys/class/drm` enumeration and the
+  kernel DRM KMS resource ioctl. This runs safely as the ordinary KDE user
+  and identifies actual connectors/modes and access limitations.
+- `rust/native`: standalone Smithay **libseat → DRM → GBM** bring-up.
+  Requires an active, authorized non-root TTY seat, refuses KDE sessions
+  and does not yet change KMS modes or draw Wayland client buffers.
+
+See [native DRM/KMS bring-up and acceptance](docs/native-linux.md). The
+nested GUI remains useful for functional tests; it is **not** the final
+hardware display architecture.
+
 ## Historical C framebuffer experiment
 
 The root `src/`, `include/`, `CMakeLists.txt` and `tests/` are a disposable **Linux fbdev technical demonstration**, **not** the project's intended product UI or future architecture. It draws a software UI, runs a standalone test game and shares frames through a demo buffer.

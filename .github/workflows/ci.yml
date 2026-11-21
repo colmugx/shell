@@ -159,3 +159,16 @@ jobs:
         run: cargo test
       - name: CLI help (does not access DRM devices)
         run: ./target/debug/poknative --help
+      - name: Native seat must reject an existing desktop session
+        run: |
+          set -eu
+          if WAYLAND_DISPLAY=wayland-0 ./target/debug/poknative --card /dev/dri/card0 2> rejection.log; then
+            echo "ERROR native seat probe attempted to run inside host desktop" >&2
+            exit 1
+          fi
+          grep -q "native DRM requires a separate Linux TTY" rejection.log
+          if XDG_SESSION_TYPE=wayland ./target/debug/poknative --card /dev/dri/card0 2> rejection.log; then
+            echo "ERROR native seat probe bypassed graphical session guard" >&2
+            exit 1
+          fi
+          grep -q "native DRM requires a separate Linux TTY" rejection.log
