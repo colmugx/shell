@@ -86,7 +86,7 @@ hardware support. CI uses mocks/headless protocol; cannot prove scanout.
 Current evidence (2026-11-21): Nested Smithay + SuperTux + text menu accepted
 by user in KDE/UTM. `rust/apps/pokdrm` probes KMS read-only; `rust/native`
 opens authorized libseat/DRM, enumerates connector/CRTC and initializes
-GBM/EGL, udev/libinput on x86-64/ARM64 CI. UTM read-only KMS preflight accepted (virtio-pci card0, Virtual-1, one CRTC/connector/encoder). Opt-in atomic GBM/GLES scanout test source added; **native modeset/page flip runtime and native Wayland presentation still unverified.** No real handheld test.
+GBM/EGL, udev/libinput on x86-64/ARM64 CI. UTM read-only KMS preflight accepted (virtio-pci card0, Virtual-1, one CRTC/connector/encoder). UTM native scanout now user-observed (1280×800@120Hz, 2 DRM VBlank acknowledgements and final green frame); updated diagnostic holds both blue and green frames separately. **Native Wayland game presentation and physical handheld scanout remain unverified.** No measured power benefit.
 
 ## Phase 2 — **PocketJS-first system shell / 系统交互平台**
 **Infrastructure spikes may run in parallel with P1; full integration depends
