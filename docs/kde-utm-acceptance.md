@@ -134,22 +134,16 @@ game navigation key, or use the mouse in the game.
 **New keyboard focus acceptance (2026-11-21 implementation; UTM still
 unverified):**
 
-1. With `OVERLAY OPEN`, **click the visible panel to give it on-demand
-   keyboard focus** (this also immediately closes it in the diagnostic
-   click-to-close mode, so a second `OVERLAY OPEN` is needed).
-2. For a keyboard-only dismissal test, keep the pointer over the panel,
-   open it again, and press **Escape** after the panel is focused; expect
-   `pokshell-layer interactive close requested via=escape` in C.
-3. Confirm the game PID remains unchanged after the panel closes and
-   **game keyboard input responds again** without restarting SuperTux.
-4. A panel without `--keyboard-interactive` must remain keyboard
-   click-through, preserving the previous behavior.
-
-The current diagnostic panel has a deliberately simple click-to-close
-action, which can make Escape testing awkward on real mouse input.
-If clicking closes before Escape reaches the layer, report this as an
-unverified keyboard-focus subtest, *not* as proof that Escape works.
-A dedicated focus-only action is a later UI milestone.
+1. With `OVERLAY OPEN`, **right-click the visible panel**. This
+   focuses the panel without closing it (only a left click invokes the
+   pointer-close action).
+2. Press **Escape**. Expect `pokshell-layer interactive close requested
+   via=escape` in terminal C and the panel to disappear.
+3. Confirm the game PID remains unchanged and **game keyboard input
+   responds again** without restarting SuperTux.
+4. Repeat with `--interactive` but without `--keyboard-interactive`:
+   the panel should remain click-to-close, while the game retains
+   keyboard focus even after clicking the panel.
 
 Finally, Ctrl+C the compositor (A) and layer client (C) if still running.
 
