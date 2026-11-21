@@ -6,7 +6,7 @@ use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::os::unix::fs::FileTypeExt;
+use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -73,10 +73,13 @@ fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Opti
         }
     }
     if opts.game.is_none() {
-        return Err("--game PATH is required (e.g. /usr/games/supertux)".into());
+        return Err("--game PATH is required (e.g. /usr/games/supertux2 on Debian)".into());
     }
     if opts.card.is_some() && !opts.native {
         return Err("--card can only be used with --native".into());
+    }
+    if opts.native && opts.no_autostart {
+        return Err("--native requires game autostart until native KMS idle-home rendering is supported".into());
     }
     Ok(Some(opts))
 }
@@ -210,6 +213,20 @@ fn validate_host_session(native: bool) -> io::Result<()> {
     Ok(())
 }
 
+/// Fail before opening a privileged seat or touching KMS if a required
+/// child program is missing/not executable. Native startup must never leave
+/// the user facing a blank console merely due to an invalid game path.
+fn validate_program(label: &str, path: &Path) -> io::Result<()> {
+    let metadata = fs::metadata(path).map_err(|err| {
+        io::Error::new(err.kind(), format!("{label} executable {}: {err}", path.display()))
+    })?;
+    if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+            format!("{label} must be an executable file: {}", path.display())));
+    }
+    Ok(())
+}
+
 fn session(opts: Options) -> io::Result<()> {
     validate_host_session(opts.native)?;
 
@@ -231,6 +248,21 @@ fn session(opts: Options) -> io::Result<()> {
     let daemon_path = opts.daemon.unwrap_or(default_daemon);
     let layer_path = opts.layer.unwrap_or(default_layer);
     let game = opts.game.expect("validated game path");
+    if opts.native {
+        // Only native mode currently requires absolute executable paths:
+        // it is important to establish a deterministic TTY test before
+        // committing the display output. Existing nested UI remains flexible.
+        for (label, path) in [
+            ("compositor", comp_path.as_path()),
+            ("daemon", daemon_path.as_path()),
+            ("layer", layer_path.as_path()),
+            ("game", game.as_path()),
+        ] {
+            validate_program(label, path)?;
+        }
+        eprintln!("pokshell-session: native preflight OK: game={} compositor={} menu={}",
+            game.display(), comp_path.display(), layer_path.display());
+    }
 
     // The nested backend is a Winit host window. The native backend is
     // explicitly --wayland and acquires libseat/DRM on an authorized TTY.
@@ -241,6 +273,8 @@ fn session(opts: Options) -> io::Result<()> {
         command.arg("--wayland");
         if let Some(card) = &opts.card { command.arg("--card").arg(card); }
     }
+    eprintln!("pokshell-session: starting {} compositor; waiting for Wayland socket",
+        if opts.native { "native" } else { "nested" });
     let mut compositor = command.env_remove("WAYLAND_SOCKET")
         .process_group(0)
         .stdout(Stdio::piped())
@@ -286,6 +320,8 @@ fn session(opts: Options) -> io::Result<()> {
             if !response.starts_with("OK GAME START") {
                 return Err(io::Error::other(format!("GAME START rejected: {}", response.trim())));
             }
+            eprintln!("pokshell-session: game process started ({}) — actual video frame still unverified",
+                response.trim());
         }
         println!("POKSESSION_READY backend={} display={display} ipc={} game={}",
             if opts.native { "native" } else { "nested" },
@@ -352,7 +388,8 @@ mod tests {
         assert!(opts(&["--game", "/usr/games/supertux", "--game", "another"]).is_err());
         assert!(opts(&["--game", "/usr/games/supertux", "--card", "/dev/dri/card0"]).is_err());
         assert!(opts(&["--game", "/usr/games/supertux", "--native", "--native"]).is_err());
-        assert!(opts(&["--game", "/usr/games/supertux", "--native", "--card"]).is_err());
+        assert!(opts(&["--game", "/usr/games/supertux2", "--native", "--card"]).is_err());
+        assert!(opts(&["--game", "/usr/games/supertux2", "--native", "--no-autostart"]).is_err());
         let p = opts(&["--game", "/usr/games/supertux", "--game-arg", "--fullscreen",
             "--no-autostart"]).unwrap().unwrap();
         assert_eq!(p.game.unwrap(), PathBuf::from("/usr/games/supertux"));
@@ -362,6 +399,13 @@ mod tests {
             "--game", "/usr/games/supertux"]).unwrap().unwrap();
         assert!(native.native);
         assert_eq!(native.card, Some(PathBuf::from("/dev/dri/card0")));
+    }
+    #[test]
+    fn native_preflight_rejects_missing_or_nonexecutable_game_before_drm() {
+        let missing = std::env::temp_dir().join(format!("pokshell-game-missing-{}", std::process::id()));
+        assert!(validate_program("game", &missing).is_err());
+        assert!(validate_program("game", Path::new("/dev/null")).is_err());
+        assert!(validate_program("game", Path::new("/bin/sh")).is_ok());
     }
     #[test]
     fn nested_server_name_rejects_host_display_and_paths() {
