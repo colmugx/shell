@@ -4,6 +4,9 @@
 //! DRM device, enumerates KMS connectors, and verifies GBM initialization.
 //! This probes the same lower stack a native compositor will consume.
 
+mod kms;
+
+use kms::Candidate;
 use smithay::{
     backend::{
         allocator::gbm::GbmDevice,
@@ -192,36 +195,47 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
     println!("kms_crtcs={} kms_connectors={} kms_encoders={}",
         resources.crtcs().len(), resources.connectors().len(), resources.encoders().len());
 
-    // Plan connector -> encoder -> compatible CRTC without modesetting.
-    // Picking the first available CRTC is incorrect on multi-output DRM
-    // devices; possible_crtcs is the kernel-provided route mask.
-    let mut display_route = None;
-    for connector in resources.connectors() {
+    // Build all valid connector/encoder/CRTC/mode routes from kernel masks.
+    // Route ranking is separated from IO and covered by deterministic tests.
+    // No DRM master, atomic commit or modeset happens here.
+    let mut routes = Vec::new();
+    let mut connected_with_modes = false;
+    for (conn_idx, connector) in resources.connectors().iter().enumerate() {
         let info = drm.get_connector(*connector, false)?;
         println!("connector={:?} state={:?} modes={}",
             connector, info.state(), info.modes().len());
         if info.state() != connector::State::Connected || info.modes().is_empty() {
             continue;
         }
-        let mode = info.modes()[0];
-        for encoder in info.encoders() {
-            let encoder_info = drm.get_encoder(*encoder)?;
-            let options = resources.filter_crtcs(encoder_info.possible_crtcs());
-            if let Some(crtc) = encoder_info.crtc()
-                .filter(|current| options.contains(current))
-                .or_else(|| options.first().copied())
-            {
-                if display_route.is_none() {
-                    display_route = Some((*connector, *encoder, crtc, mode));
+        connected_with_modes = true;
+        for (encoder_idx, encoder) in resources.encoders().iter().enumerate() {
+            if !info.encoders().contains(encoder) { continue; }
+            let enc = drm.get_encoder(*encoder)?;
+            let compatible = resources.filter_crtcs(enc.possible_crtcs());
+            for (crtc_idx, crtc) in resources.crtcs().iter().enumerate() {
+                if !compatible.contains(crtc) { continue; }
+                for (mode_idx, mode) in info.modes().iter().enumerate() {
+                    let (width, height) = mode.size();
+                    routes.push(Candidate {
+                        connector: conn_idx, encoder: encoder_idx,
+                        crtc: crtc_idx, mode: mode_idx,
+                        width, height,
+                        refresh_millihz: mode.vrefresh(),
+                        currently_routed: enc.crtc() == Some(*crtc),
+                    });
                 }
             }
         }
     }
-    let Some((connector, encoder, crtc, mode)) = display_route else {
-        return Err("no connected connector with a mode and a compatible encoder/CRTC route".into());
-    };
-    println!("kms_route connector={connector:?} encoder={encoder:?} crtc={crtc:?} mode={:?}",
-        mode.size());
+    let selected = kms::choose(&routes, connected_with_modes)
+        .map_err(|reason| format!("no valid native KMS output route: {reason:?}"))?;
+    let route = &routes[selected];
+    let connector = resources.connectors()[route.connector];
+    let encoder = resources.encoders()[route.encoder];
+    let crtc = resources.crtcs()[route.crtc];
+    let mode = drm.get_connector(connector, false)?.modes()[route.mode];
+    println!("kms_candidates={} kms_route connector={connector:?} encoder={encoder:?} crtc={crtc:?} mode={:?} refresh_millihz={}",
+        routes.len(), mode.size(), mode.vrefresh());
     let gbm = GbmDevice::new(drm_fd)?;
     println!("gbm_initialized=yes");
     // Smithay's GBM/Native EGL path is also used by its DRM compositor.
