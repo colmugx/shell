@@ -597,6 +597,12 @@ impl Server {
 
     /// Do not modeset an empty initial output until a game has presented a
     /// drawable surface. This avoids replacing the Linux TTY with black.
+    pub fn client_counts(&self) -> (usize, usize, usize) {
+        (self.state.xdg_shell_state.toplevel_surfaces().len(),
+         self.state.layer_shell_state.layer_surfaces().filter(|layer| layer.alive()).count(),
+         self.state.pending_dmabufs.len())
+    }
+
     pub fn game_has_content(&mut self, renderer: &mut GlesRenderer) -> bool {
         self.state.xdg_shell_state.toplevel_surfaces().iter().any(|surface| {
             let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =

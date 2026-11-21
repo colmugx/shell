@@ -207,7 +207,10 @@ impl Supervisor {
         let mut command = Command::new(&config.program);
         command.args(&config.args)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            // A native game can stall before creating its first XDG surface.
+            // Keep stdout as well as stderr in the session log; otherwise
+            // SDL/EGL startup diagnostics are silently discarded.
+            .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
         Self::configure_game_display(config, &mut command)?;
         command.process_group(0); // Safe std API, available since Rust 1.64.

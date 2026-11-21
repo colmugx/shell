@@ -388,6 +388,8 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
                 // can render. Never submit it as the first frame.
                 if !pump.has_submitted() && !server.game_has_content(&mut renderer) {
                     if Instant::now() >= startup_deadline {
+                        let (xdg, layers, imports) = server.client_counts();
+                        eprintln!("poknative: first_frame_timeout xdg_toplevels={xdg} layer_surfaces={layers} pending_dmabufs={imports}");
                         return Err("no renderable game surface after 30s; leaving the TTY visible".into());
                     }
                     seat_events.dispatch(Duration::from_millis(50), &mut state)?;

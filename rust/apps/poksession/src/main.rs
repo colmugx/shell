@@ -327,10 +327,19 @@ fn session(opts: Options) -> io::Result<()> {
             if opts.native { "native" } else { "nested" },
             ipc.display(), game.display());
         println!("Use rust/target/debug/pokctl OVERLAY OPEN to show the menu; Ctrl+C stops owned services.");
+        let startup_deadline = Instant::now() + Duration::from_secs(30);
+        let mut next_status = Instant::now();
 
         loop {
             if SHUTDOWN.load(Ordering::Acquire) { break; }
             if let Some(status) = compositor.try_wait()? {
+                if opts.native && status.success() {
+                    // Ctrl+Alt+Backspace is handled in poknative, not in
+                    // this supervisor. Its clean exit is a deliberate
+                    // request to stop all owned children.
+                    eprintln!("pokshell-session: native compositor exited cleanly; shutting down owned game and menu");
+                    break;
+                }
                 return Err(io::Error::other(format!("compositor exited unexpectedly: {status}")));
             }
             if let Some(client) = layer.as_mut() {
@@ -344,6 +353,22 @@ fn session(opts: Options) -> io::Result<()> {
                     eprintln!("pokshell-session: pokshelld exited ({status}); Smithay remains open");
                     daemon = None;
                 }
+            }
+            if opts.native && Instant::now() < startup_deadline
+                && Instant::now() >= next_status
+            {
+                if daemon.is_none() {
+                    return Err(io::Error::other("game daemon exited during native game startup"));
+                }
+                let status = send_ipc(&ipc, "STATUS")?;
+                eprintln!("pokshell-session: native game startup status: {}", status.trim_end());
+                if status.contains("pid=none") {
+                    return Err(io::Error::other(format!(
+                        "game exited before native first-frame window: {} (check preceding SuperTux/SDL/EGL output)",
+                        status.trim_end()
+                    )));
+                }
+                next_status = Instant::now() + Duration::from_secs(2);
             }
             thread::sleep(Duration::from_millis(80));
         }

@@ -62,6 +62,9 @@ impl Service {
         for event in self.supervisor.take_events() {
             let line = event.to_wire(self.next_event_seq);
             self.next_event_seq += 1;
+            // Game lifecycle diagnostics must be visible even when no
+            // WATCH subscriber exists and the XDG client never appears.
+            eprintln!("pokshelld: {}", line.trim_end());
             // Drop subscribers which disconnected or failed to read promptly.
             // This avoids an unbounded queue delaying the game/session thread.
             self.subscribers.retain(|(_, sender)| {

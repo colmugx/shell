@@ -210,3 +210,27 @@ already performed modeset is **not** guaranteed to restore the previous
 VT scanout without manual verification; do not repeat a black-screen
 run without collecting its log first. No root compositor, no KDE
 takeover, and do not treat CI headless output as hardware acceptance.
+
+
+### P1-N05 startup trace from real UTM log (2026-11-21)
+
+User's failed native run reached `pokshelld ready`, an attached layer-shell
+surface with `visible=0`, `GAME START`, and `POKSESSION_READY`, but no
+`new xdg_toplevel` and **zero native frames submitted/presented**.
+`EGL_WL_bind_wayland_display` is absent under the software EGL device:
+this could affect EGL clients, but is not yet proven to be the sole cause.
+The emergency Ctrl+Alt+Backspace worked. Subsequent layer BrokenPipe is
+post-shutdown, not evidence of game frame failure.
+
+Game stdout had previously been routed to `/dev/null`; this masked early
+SDL/EGL/game diagnostics. Game stdout now inherits the daemon's log stream,
+while daemon logs explicit GameStarted/GameExited events. The native session
+prints daemon STATUS (including running pid and last exit) every two seconds
+within its startup window; an early dead game stops the session instead of
+waiting for a blank render. When no XDG buffer arrives, the compositor logs
+XDG/layer counts and pending DMA-BUF import count before leaving the TTY.
+The compositor's clean emergency exit is recognized by the session supervisor
+and triggers owned-process shutdown rather than an unexpected-exit error.
+
+This is a **diagnostic and lifecycle fix**. Full native game rendering remains
+unverified; do not claim EGL root-cause resolution without the new game logs.
