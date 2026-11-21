@@ -11,6 +11,10 @@ name = "pokshell-core"
 version = "0.1.0"
 
 [[package]]
+name = "pokdrm"
+version = "0.1.0"
+
+[[package]]
 name = "poksession"
 version = "0.1.0"
 

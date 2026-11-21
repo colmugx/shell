@@ -39,6 +39,10 @@ jobs:
         run: cargo test --workspace --locked
       - name: Rust build
         run: cargo build --workspace --locked
+      - name: Native Linux DRM/KMS discovery (headless allowed)
+        run: |
+          ./target/debug/pokdrm
+          ./target/debug/pokdrm --help
       - name: IPC and child-process integration test
         run: python3 tests/ipc_integration.py
       - name: Nested Wayland game process environment isolation test

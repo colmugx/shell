@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/pokshell-core", "apps/pokshelld", "apps/pokctl", "apps/poksession"]
+members = ["crates/pokshell-core", "apps/pokshelld", "apps/pokctl", "apps/poksession", "apps/pokdrm"]
 
 [workspace.package]
 edition = "2021"
