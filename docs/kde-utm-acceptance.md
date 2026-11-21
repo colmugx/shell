@@ -1,6 +1,6 @@
 # KDE Plasma Wayland / Debian ARM64 UTM acceptance
 
-This is a **manual acceptance procedure**, not evidence that UTM was tested.
+This is a **manual acceptance procedure**. The project owner reported two checks passed in UTM on 2026-11-21: SuperTux now opens inside the nested Smithay window, and `pokctl QUIT` exits the game/session daemon without closing the separate Smithay window. Other checks below remain open until explicitly observed.
 Run as the *logged-in non-root Plasma user*. Do **not** launch a DRM/KMS
 compositor, run `sudo sway`, or replace the current KWin session.
 
@@ -166,8 +166,9 @@ wrapper rather than the actual renderer; inspect its descendants if needed.)
 ## Acceptance checklist
 
 - [ ] A runs nested in **KDE/KWin Wayland**, no DRM/KMS permission error.
-- [ ] B's daemon is the *same user* and starts SuperTux with explicit
-      `--game-wayland-display`. A game window must not open separately in KDE.
+- [x] SuperTux appears **inside pokcomp's host window**, rather than as a separate KDE window (reported 2026-11-21).
+- [x] `pokctl QUIT` exits the game/session daemon but leaves the independently running Smithay host window open (reported 2026-11-21).
+- [ ] The daemon runs as the expected regular user with explicit `--game-wayland-display` (configuration details not independently inspected in UTM).
 - [ ] C connects to **pokcomp**, not the host KWin display.
 - [ ] The game continues responding while the overlay appears.
 - [ ] Clicking the visible panel closes it; the game PID remains unchanged.

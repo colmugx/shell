@@ -73,10 +73,7 @@ rust/target/debug/pokctl QUIT
 ```
 
 
-**Expected only after manual verification**: a native Wayland game can
-connect to pokcomp, receive XDG configure events, submit buffers, and
-be drawn in the compositor's host window. A successful Rust build or
-CI test is **not** evidence of visible game frames in UTM.
+**UTM manual acceptance (user-reported, 2026-11-21):** after pinning the game to pokcomp's own Wayland socket, SuperTux appears within the Smithay host window rather than in a separate KDE game window. `pokctl QUIT` stops the game/session daemon while the independent Smithay window stays open. This confirms the intended process lifetime boundary; it does not establish DRM/KMS ownership, GLES acceleration, reliable fullscreen policy, or interactive-overlay input acceptance.
 
 ## CI evidence
 

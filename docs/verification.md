@@ -6,17 +6,17 @@ Evidence is tracked per implementation, per machine and per hardware reference.
 | --- | --- | --- |
 | Legacy C framebuffer alpha on x86-64/ARM64 | GitHub Actions Linux builds/tests | CI verified |
 | Rust process supervision, termination grace, event subscription, fragmented IPC | `rust/` unit/integration tests; Actions run 44695342191 | CI passed on x86-64 / ARM64 |
-| Rust user session in Debian ARM64 / UTM | No local UTM boot log | Unverified |
+| Rust user session in Debian ARM64 / UTM | User-reported KDE Wayland VM session running pokcomp and SuperTux (2026-11-21); no boot log or native DRM/KMS evidence | Nested session observed by user; boot/native DRM/KMS unverified |
 | Bootable Buildroot QEMU image | No QEMU boot log | Unverified |
 | Own DRM/KMS and Wayland compositor | Smithay nested Winit/GLES compositor; headless Sway-hosted CI runs actual XDG and Layer Shell clients; native DRM/KMS not implemented | Nested software CI verified; native backend pending |
 | Wayland layer-shell diagnostic surface | Rust wl_shm + zwlr_layer_shell_v1 client; Actions 44704676668, x86-64 headless Sway protocol test | Compiled on x86-64 / ARM64; headless protocol handshake passed |
-| UTM Wayland graphical session | No direct VM test evidence | Unverified |
-| Actual game overlay during arbitrary fullscreen SDL/GLES game | Headless CI verifies XDG/Layer SHM coexistence and retained PID. UTM screenshot (2026-11-20) shows SuperTux opened separately under KDE rather than within pokcomp. Direct-main fix pins nested Wayland and removes host X11 fallback; manual retest pending | UTM regression observed; fail-closed launcher and SDL2 transport coverage added, real SuperTux rendering unverified |
+| UTM Wayland graphical session | User-reported acceptance on 2026-11-21: SuperTux is rendered within the nested Smithay host window; QUIT ends the game/session daemon while the separate Smithay host window remains open | Manual UTM acceptance passed for window ownership and process separation only |
+| Actual game overlay during arbitrary fullscreen SDL/GLES game | Headless CI verifies XDG/Layer SHM coexistence and unchanged PID. Earlier UTM capture (2026-11-20) showed SuperTux escaping to KDE; following explicit game Wayland socket pinning, user reports SuperTux now inside the Smithay window (2026-11-21). Fullscreen negotiation, GLES acceleration and interactive overlay behavior have not been separately confirmed | Nested SuperTux window ownership user-accepted; fullscreen/GLES/overlay input still unverified |
 | MoonBit/WAMR component execution | Not linked | Not implemented |
 | Production console UI, controller focus, dual screen | Nested pointer hit testing and click-to-focus implemented; optional panel click-to-close (manual UTM unverified). No gamepad/touch, production UI or dual-screen policy | Partial input implementation; full interaction pending |
 | H700, Duo Lite, RP6 physical-device boot / suspend / hardware acceleration | No test reports | Unverified |
 
-**CI tests validate native Linux user-space code; they are not evidence of a bootable firmware or actual GPU output.**
+**Evidence boundary:** CI verifies native Linux user-space behavior. The 2026-11-21 UTM result is a **user-reported manual acceptance** of nested SuperTux window ownership and independent compositor lifetime, not an independently captured boot log, GPU acceleration measurement, or full-screen/gamepad validation.
 
 ## Security/maintenance note
 
