@@ -46,6 +46,7 @@ struct Options {
     no_autostart: bool,
     native: bool,
     card: Option<PathBuf>,
+    no_dmabuf: bool,
 }
 
 fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, String> {
@@ -66,6 +67,7 @@ fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Opti
                 opts.ipc_socket = Some(PathBuf::from(args.next().ok_or("--socket requires a path")?)),
             Some("--no-autostart") if !opts.no_autostart => opts.no_autostart = true,
             Some("--native") if !opts.native => opts.native = true,
+            Some("--no-dmabuf") if !opts.no_dmabuf => opts.no_dmabuf = true,
             Some("--card") if opts.card.is_none() =>
                 opts.card = Some(PathBuf::from(args.next().ok_or("--card requires /dev/dri/cardN")?)),
             Some("--help") | Some("-h") => return Ok(None),
@@ -77,6 +79,9 @@ fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Opti
     }
     if opts.card.is_some() && !opts.native {
         return Err("--card can only be used with --native".into());
+    }
+    if opts.no_dmabuf && !opts.native {
+        return Err("--no-dmabuf requires --native".into());
     }
     if opts.native && opts.no_autostart {
         return Err("--native requires game autostart until native KMS idle-home rendering is supported".into());
@@ -272,6 +277,7 @@ fn session(opts: Options) -> io::Result<()> {
     if opts.native {
         command.arg("--wayland");
         if let Some(card) = &opts.card { command.arg("--card").arg(card); }
+        if opts.no_dmabuf { command.arg("--no-dmabuf"); }
     }
     eprintln!("pokshell-session: starting {} compositor; waiting for Wayland socket",
         if opts.native { "native" } else { "nested" });
@@ -434,6 +440,9 @@ mod tests {
         assert!(opts(&["--game", "/usr/games/supertux", "--native", "--native"]).is_err());
         assert!(opts(&["--game", "/usr/games/supertux2", "--native", "--card"]).is_err());
         assert!(opts(&["--game", "/usr/games/supertux2", "--native", "--no-autostart"]).is_err());
+        assert!(opts(&["--game", "/bin/sh", "--no-dmabuf"]).is_err());
+        assert!(opts(&["--game", "/bin/sh", "--native", "--no-dmabuf", "--no-dmabuf"]).is_err());
+        assert!(opts(&["--game", "/bin/sh", "--native", "--no-dmabuf"]).unwrap().unwrap().no_dmabuf);
         let p = opts(&["--game", "/usr/games/supertux", "--game-arg", "--fullscreen",
             "--no-autostart"]).unwrap().unwrap();
         assert_eq!(p.game.unwrap(), PathBuf::from("/usr/games/supertux"));

@@ -38,6 +38,19 @@ prepare() {
     printf '\nBuilt. On an authorized non-root text TTY with KDE stopped, run:\n  ./tools/tty\n'
 }
 
+# Record server progress in the short on-screen result.
+server_progress() {
+    local log="$1" details
+    details="$(grep -E 'waiting_for_game_surface|first_frame_timeout' "$log" | tail -n 1 || true)"
+    if [[ -n "$details" ]]; then
+        printf '%s' "$details" | sed -E 's/.*accepted_clients=([0-9]+) dispatched_requests=([0-9]+) xdg_toplevels=([0-9]+).*/clients=\1 requests=\2 xdg=\3/'
+    elif grep -Fq 'native_frames_submitted=' "$log"; then
+        grep 'native_frames_submitted=' "$log" | tail -n 1
+    else
+        printf 'server_progress=missing'
+    fi
+}
+
 # Offline classification; does not access seat/DRM.
 classify() {
     local log="$1" marker="$2"
@@ -99,8 +112,10 @@ run_case() {
     wait "$CHILD_PID" || status=$?
     CHILD_PID=0
     result="$(classify "$log" "$marker")"
-    printf '%s\t%s\t%s\t%s\n' "$name" "$result" "$status" "$log" >> "$REPORT"
-    printf '  %s; log=%s\n' "$result" "$log"
+    local progress
+    progress="$(server_progress "$log")"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$result" "$status" "$progress" "$log" >> "$REPORT"
+    printf '  %s; %s; log=%s\n' "$result" "$progress" "$log"
     [[ ! -e "$RUNTIME/pokshell.sock" ]] ||
         fail "session left its IPC socket; stopping tests rather than removing it: $log"
 }
@@ -108,7 +123,7 @@ run() {
     check_host
     RUN_DIR="$(mktemp -d "$HOME/pokshell-tty-XXXXXXXX")"
     REPORT="$RUN_DIR/summary.tsv"
-    printf 'case\tresult\texit_code\tlog\n' > "$REPORT"
+    printf 'case\tresult\texit_code\tserver_progress\tlog\n' > "$REPORT"
     cd "$ROOT"
     local python_bin
     python_bin="$(command -v python3)"
@@ -118,6 +133,12 @@ run() {
         --game-arg --trace-wayland
     run_case sdl-shm-no-libdecor 'pokshell-sdl: shm_surface_submitted' \
         "$SESSION" --native --card "$CARD" \
+        --game "$python_bin" --game-arg "$SDL_TEST" \
+        --game-arg --no-libdecor --game-arg --trace-wayland
+    # A/B protocol isolation: same SDL client but omit linux-dmabuf global
+    # *only* in this session. No permanent fallback policy is inferred.
+    run_case sdl-shm-no-dmabuf 'pokshell-sdl: shm_surface_submitted' \
+        "$SESSION" --native --card "$CARD" --no-dmabuf \
         --game "$python_bin" --game-arg "$SDL_TEST" \
         --game-arg --no-libdecor --game-arg --trace-wayland
     run_case sdl-opengl-no-libdecor 'pokshell-sdl: gl_swap_submitted' \

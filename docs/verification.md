@@ -168,3 +168,24 @@ removed in the following development iteration.
 CI invokes its `--self-test` only (no DRM); x86-64 and ARM64 SDL2 protocol
 regressions now check both the normal SDL video initialization path and
 the no-libdecor variant. Neither CI path proves native KMS SuperTux.
+
+### P1-N05 isolated DMA-BUF advertising comparison (diagnostic only)
+
+The 2026-11-21 TTY summary reported four 22-second timeouts with
+PRE_XDG_STALL_OR_EXIT. Status 124 is GNU timeout, not a compositor crash or
+a measured EGL failure. Per-case logs remain required to distinguish
+SDL_Init, Wayland sync, and protocol requests; the screenshot alone does
+not establish which stage stalled.
+
+Added opt-in `--no-dmabuf` to `poknative --wayland` and to
+`poksession --native` (forwarded only to the owned native compositor).
+It omits linux-dmabuf global registration for this session only, without
+changing GLES/KMS or the default OpenGL path. CLI tests reject use outside
+native Wayland and duplicate flags. The mock native session integration
+now checks that the flag reaches its child compositor, without DRM access.
+Temporary `tools/tty` adds an SDL/SHM comparison with and without
+the DMA-BUF global and prints accepted Wayland clients, dispatched request
+count and XDG toplevel count for each attempt. These outputs must not be
+treated as hardware acceptance until UTM evidence arrives. Script stays
+temporary until successful TTY validation, and will be removed in the
+next iteration once the results support it.

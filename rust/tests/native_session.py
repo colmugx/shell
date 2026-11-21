@@ -34,7 +34,10 @@ def component():
     runtime = Path(os.environ["XDG_RUNTIME_DIR"])
     record = runtime / (role + ".json")
     if role == "mock-compositor":
-        assert sys.argv[1:] == ["--wayland", "--card", "/dev/dri/card0"], sys.argv
+        expected = ["--wayland", "--card", "/dev/dri/card0"]
+        if os.environ.get("POKSHELL_MOCK_SHM_ONLY") == "1":
+            expected.append("--no-dmabuf")
+        assert sys.argv[1:] == expected, (sys.argv, expected)
         assert "WAYLAND_SOCKET" not in os.environ
         endpoint = runtime / DISPLAY
         sock = socket.socket(socket.AF_UNIX)
@@ -77,7 +80,7 @@ def ipc(sock_path, cmd):
         conn.sendall((cmd + "\n").encode())
         return conn.recv(1024).decode()
 
-def test():
+def test(no_dmabuf=False):
     with tempfile.TemporaryDirectory(prefix="pokshell-native-session-") as td:
         runtime = Path(td)
         for role in ["mock-compositor", "mock-layer", "mock-game"]:
@@ -91,12 +94,15 @@ def test():
         env.update({
             "XDG_RUNTIME_DIR": str(runtime),
             "XDG_SESSION_TYPE": "tty",
+            "POKSHELL_MOCK_SHM_ONLY": "1" if no_dmabuf else "0",
         })
         args = [str(SESSION), "--native", "--card", "/dev/dri/card0",
                 "--compositor", str(runtime / "mock-compositor"),
                 "--daemon", str(DAEMON),
                 "--layer", str(runtime / "mock-layer"),
                 "--game", str(runtime / "mock-game")]
+        if no_dmabuf:
+            args.append("--no-dmabuf")
         output = runtime / "session.log"
         with output.open("wb") as writer:
             proc = subprocess.Popen(args, env=env, stdout=writer,
@@ -140,4 +146,5 @@ if __name__ == "__main__":
     if Path(sys.argv[0]).name.startswith("mock-"):
         component()
     else:
-        test()
+        test(no_dmabuf=False)
+        test(no_dmabuf=True)

@@ -73,6 +73,8 @@ struct Options {
     monitor_seconds: Option<u64>,
     scanout_seconds: Option<u64>,
     wayland: bool,
+    /// Diagnostic only: suppress linux-dmabuf advertising for a single native session.
+    no_dmabuf: bool,
 }
 
 fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, String> {
@@ -99,6 +101,7 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, St
                 opts.scanout_seconds = Some(value);
             },
             Some("--wayland") if !opts.wayland => opts.wayland = true,
+            Some("--no-dmabuf") if !opts.no_dmabuf => opts.no_dmabuf = true,
             Some("--help") | Some("-h") => return Ok(None),
             _ => return Err(format!("unknown/duplicate argument: {}", arg.to_string_lossy())),
         }
@@ -108,6 +111,9 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, St
     }
     if opts.wayland && (opts.scanout_seconds.is_some() || opts.monitor_seconds.is_some()) {
         return Err("--wayland is mutually exclusive with diagnostic modes".into());
+    }
+    if opts.no_dmabuf && !opts.wayland {
+        return Err("--no-dmabuf requires --wayland (native diagnostic only)".into());
     }
     Ok(Some(opts))
 }
@@ -355,7 +361,11 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
             let mut server = pokshell_wayland::Server::new(
                 Mode { size, refresh: (mode.vrefresh() as i32).saturating_mul(1000) },
                 Transform::Normal, "pokshell-native", None)?;
-            server.enable_dmabuf(&mut renderer);
+            if opts.no_dmabuf {
+                eprintln!("poknative: diagnostics shm_only=yes (linux-dmabuf global intentionally omitted)");
+            } else {
+                server.enable_dmabuf(&mut renderer);
+            }
             for fd in server.poll_fds()? {
                 // Dispatch the real Wayland protocol as soon as its eventfd
                 // or listening socket becomes readable. A callback that only
@@ -541,6 +551,10 @@ mod tests {
         assert!(opts(&["--help"]).unwrap().is_none());
         assert!(opts(&["--unknown"]).is_err());
         assert!(opts(&["--wayland"]).unwrap().unwrap().wayland);
+        assert!(opts(&["--no-dmabuf"]).is_err());
+        assert!(opts(&["--wayland", "--no-dmabuf", "--no-dmabuf"]).is_err());
+        let no_dmabuf = opts(&["--wayland", "--no-dmabuf"]).unwrap().unwrap();
+        assert!(no_dmabuf.wayland && no_dmabuf.no_dmabuf);
         assert!(opts(&["--wayland", "--scanout-seconds", "5"]).is_err());
         assert!(opts(&["--scanout-seconds", "0"]).is_err());
         assert!(opts(&["--scanout-seconds", "16"]).is_err());
