@@ -50,7 +50,8 @@ cargo build --manifest-path rust/native/Cargo.toml
 
 Expected diagnostic milestones are `POKNATIVE seat=...`,
 `kms_crtcs=...`, at least one connector with modes,
-and `gbm_initialized=yes` / `egl_display_initialized=yes`.
+and `kms_route` (compatible connector/encoder/CRTC), `gbm_initialized=yes`,
+and `egl_display_initialized=yes`.
 
 Do not launch `poknative` with sudo or from KDE's graphical session.
 The output does **not** claim native fullscreen Wayland gaming,

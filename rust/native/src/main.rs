@@ -17,7 +17,7 @@ use smithay::{
     reexports::{
         calloop::EventLoop,
         input::Libinput,
-        drm::control::Device as DrmControlDevice,
+        drm::control::{connector, Device as DrmControlDevice},
         rustix::fs::OFlags,
     },
     utils::DeviceFd,
@@ -190,16 +190,36 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
     println!("kms_crtcs={} kms_connectors={} kms_encoders={}",
         resources.crtcs().len(), resources.connectors().len(), resources.encoders().len());
 
-    let mut modes = 0usize;
+    // Plan connector -> encoder -> compatible CRTC without modesetting.
+    // Picking the first available CRTC is incorrect on multi-output DRM
+    // devices; possible_crtcs is the kernel-provided route mask.
+    let mut display_route = None;
     for connector in resources.connectors() {
         let info = drm.get_connector(*connector, false)?;
         println!("connector={:?} state={:?} modes={}",
             connector, info.state(), info.modes().len());
-        modes += info.modes().len();
+        if info.state() != connector::State::Connected || info.modes().is_empty() {
+            continue;
+        }
+        let mode = info.modes()[0];
+        for encoder in info.encoders() {
+            let encoder_info = drm.get_encoder(*encoder)?;
+            let options = resources.filter_crtcs(encoder_info.possible_crtcs());
+            if let Some(crtc) = encoder_info.crtc()
+                .filter(|current| options.contains(current))
+                .or_else(|| options.first().copied())
+            {
+                if display_route.is_none() {
+                    display_route = Some((*connector, *encoder, crtc, mode));
+                }
+            }
+        }
     }
-    if resources.crtcs().is_empty() || modes == 0 {
-        return Err("no KMS CRTC/display modes; cannot start a native output".into());
-    }
+    let Some((connector, encoder, crtc, mode)) = display_route else {
+        return Err("no connected connector with a mode and a compatible encoder/CRTC route".into());
+    };
+    println!("kms_route connector={connector:?} encoder={encoder:?} crtc={crtc:?} mode={:?}",
+        mode.size());
     let gbm = GbmDevice::new(drm_fd)?;
     println!("gbm_initialized=yes");
     // Smithay's GBM/Native EGL path is also used by its DRM compositor.
