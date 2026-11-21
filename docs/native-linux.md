@@ -13,9 +13,10 @@ backend. The C framebuffer prototype is not the target graphics stack.
   Safe to run from regular KDE Wayland Konsole; never requests DRM master.
 - `rust/native` (`poknative`): **separate Smithay backend bring-up** using
   libseat for a seat-owned DRM file descriptor, kernel KMS resource enumeration,
-  and GBM + EGL display initialization, udev DRM hotplug monitoring, libinput device-event
-collection and libseat suspend/resume handling. **No DRM modeset, buffers or Wayland compositor
-  are attached yet**. It refuses to run inside KDE by default. It is intended
+  a compatible connector/encoder/CRTC route, GBM + EGL initialization,
+  udev DRM hotplug monitoring, libinput event collection and libseat
+  suspend/resume handling. **No DRM modeset, scanout or native Wayland
+  presentation is attached yet**. It refuses to run inside KDE by default. It is intended
   for a separate native Linux TTY, not a nested KDE window.
 
 The implementation deliberately leaves KMS plane/CRTC state unchanged until
@@ -39,7 +40,13 @@ UTM VirtIO GPU. CI may report `drm_cards=0`, which is not a hardware failure.
 
 ## Separate TTY/seat test (only where appropriate)
 
-Install `libseat-dev libdrm-dev libgbm-dev pkg-config` for building.
+Install these development dependencies before building (ordinary user
+for Cargo; sudo only for installing packages):
+
+```sh
+sudo apt install -y pkg-config libdrm-dev libgbm-dev libseat-dev \
+  libudev-dev libinput-dev libxkbcommon-dev libegl1-mesa-dev libgles2-mesa-dev
+```
 On a real Linux TTY with an **active authorized logind/seatd seat**,
 after verifying no KDE session is using the target DRM device:
 
@@ -60,12 +67,14 @@ ownership. Those are separate runtime acceptance gates.
 
 ## Next implementation gates
 
-1. Libseat activation/pause-resume event processing, hotplug and DRM master
-   lifetime with reliable non-destructive teardown.
-2. GBM/EGL output buffers, CRTC/connector selection, modeset and vblank loop.
-3. Move the existing Smithay XDG/layer-shell rendering core to the native
-   backend without duplicating game/session IPC.
-4. Libinput routing, multiple outputs and suspend/resume.
+1. Wire seat activation/hotplug signals to GPU output lifetime,
+   including safe teardown on pause, resume and virtual-terminal changes.
+2. Create GBM/EGL GLES render targets for selected CRTCs, then implement
+   atomic modesetting and vblank-paced page flips.
+3. Move the existing Smithay XDG/layer-shell surface composition to the
+   native backend without duplicating pokshelld game/session IPC.
+4. Complete libinput routing, multi-output geometry and suspend/resume
+   for an actual handheld or dedicated Linux console session.
 
 ### Seat events and device hotplug
 
