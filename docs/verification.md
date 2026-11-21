@@ -34,3 +34,26 @@ nested redraw; native `FramePump` retains at most one in-flight scanout
 and waits for an acknowledged vblank before reusing buffers.
 Proof: deterministic unit tests and x86-64/ARM64 CI pending; idle
 power, GPU clocks and frame latency not measured.
+
+### P1-N05 XDG/SHM canary (source-only; CI and user TTY pending)
+
+pokxdg-smoke is a Wayland XDG-Shell + wl_shm test game. It does not link
+to SDL, EGL, OpenGL or GLX. It performs bufferless XDG configure/ack and
+attaches one bounded SHM checkerboard buffer; a frame callback is evidence
+that the compositor notified the client after presentation.
+
+Build using:
+    cargo build --manifest-path graphics/wayland-layer/Cargo.toml
+    cargo build --manifest-path rust/Cargo.toml --workspace --locked
+    cargo build --manifest-path rust/native/Cargo.toml
+
+On an authorized non-root TTY after stopping KDE, run:
+    ./rust/target/debug/poksession --native --card /dev/dri/card0 \
+      --game "$PWD/graphics/wayland-layer/target/debug/pokxdg-smoke" \
+      > "$HOME/pokshell-native-canary.log" 2>&1
+
+Exit with Ctrl+Alt+Backspace. The expected trace includes connected,
+new xdg_toplevel, xdg_configured, xdg_shm_buffer_committed,
+native_kms_first_frame_queued=yes, and frame_callback_done.
+Success isolates a SuperTux/SDL/EGL-specific problem; failure isolates
+the native Wayland XDG/SHM/KMS path. Neither is accepted without TTY logs.

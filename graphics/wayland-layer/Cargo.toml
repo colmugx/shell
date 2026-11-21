@@ -7,6 +7,7 @@ rust-version = "1.82"
 
 [dependencies]
 wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 tempfile = "3"
 font8x8 = "0.3"
