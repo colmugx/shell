@@ -500,6 +500,7 @@ pub struct Server {
     start: Instant,
     disconnected: Arc<std::sync::atomic::AtomicBool>,
     dmabuf_enabled: bool,
+    accepted_clients: u64,
 }
 
 impl Server {
