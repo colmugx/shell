@@ -27,3 +27,9 @@ The historical C framebuffer program is not suitable as a production display man
 
 P1-N05: shared XDG/layer-shell core reused by nested and native binaries;
 actual native Wayland rendering and physical input remain unverified.
+
+P1-N05 energy policy: common XDG/layer compositor now skips unmodified
+nested redraw; native `FramePump` retains at most one in-flight scanout
+and waits for an acknowledged vblank before reusing buffers.
+Proof: deterministic unit tests and x86-64/ARM64 CI pending; idle
+power, GPU clocks and frame latency not measured.

@@ -153,3 +153,8 @@ No PR ceremony; no claims of hardware success from compilation.
 
 P1-N05 integration: shared Wayland protocol/render core and experimental native
 Wayland socket/GBM frame submission added; native runtime acceptance pending.
+
+P1-N05 frame pacing: one-in-flight KMS buffer state machine, no repeated
+nested renders when no surfaces commit. Compile/CI and physical idle-power
+measurement are independent gates. Do not claim battery savings before
+reproducible measurements.

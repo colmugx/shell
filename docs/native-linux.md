@@ -122,3 +122,18 @@ It remains a single-output experiment; SHM clients, keyboard and mouse
 are the initial target. DMA-BUF client negotiation, touch/controller
 isolation, and hardware suspend/recovery are not yet complete. Do not
 claim native game acceptance before the TTY scanout test passes.
+
+## P1-N05 frame pacing and idle GPU policy
+
+The shared Smithay compositor now records surface-tree damage and both
+the KDE nested harness and the Linux-native backend avoid submitting
+unchanged frames. On the KMS path `FramePump` permits **one in-flight**
+scanout at a time; a corresponding `frame_submitted()`/vblank event must
+arrive before the next render. Idle clients do not request new GPU buffers
+or trigger redraws. The native run logs
+`native_frames_submitted=N presented=M` on orderly shutdown.
+
+This is a correctness/efficiency policy, **not a measured battery-life
+result**: idle CPU wakeups, refresh scheduling and real GPU clock behavior
+must still be benchmarked on hardware. Software CI tests the frame
+state-machine, not real-world power consumption or atomic scanout.
