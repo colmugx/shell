@@ -227,6 +227,23 @@ impl CompositorHandler for PokCompositor {
         if let Some(layer) = self.layer_shell_state.layer_surfaces()
             .find(|layer| layer.wl_surface() == surface && layer.alive())
         {
+            // The layer client dynamically drops keyboard interactivity on
+            // hide. Move focus back to the game before the next key event.
+            let wants_keyboard = smithay::wayland::compositor::with_states(surface, |states| {
+                states.cached_state.get::<smithay::wayland::shell::wlr_layer::LayerSurfaceCachedState>()
+                    .current().keyboard_interactivity
+                    != smithay::wayland::shell::wlr_layer::KeyboardInteractivity::None
+            });
+            if !wants_keyboard {
+                if let Some(keyboard) = self.seat.get_keyboard() {
+                    if keyboard.current_focus().as_ref() == Some(surface) {
+                        let game = self.xdg_shell_state.toplevel_surfaces().last()
+                            .map(|game| game.wl_surface().clone());
+                        keyboard.set_focus(self, game, SERIAL_COUNTER.next_serial());
+                        eprintln!("pokcomp: keyboard focus returned to game after layer hide");
+                    }
+                }
+            }
             if layer.has_pending_changes() {
                 let height = self.output.current_mode().map(|mode| mode.size.h).unwrap_or(720);
                 layer.with_pending_state(|state| {
@@ -411,15 +428,24 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
                 let serial = SERIAL_COUNTER.next_serial();
                 if event.state() == ButtonState::Pressed && !pointer.is_grabbed() {
                     let hit = state.surface_under(state.pointer_position, host_size);
-                    // The diagnostic layer explicitly requests
-                    // KeyboardInteractivity::None; a click must not steal
-                    // keyboard control from the running game.
+                    // Honor the WLR Layer Shell keyboard-interactivity
+                    // contract. The new keyboard-enabled diagnostic layer
+                    // asks for OnDemand and is focused by click; the classic
+                    // pointer-only mode never steals game keyboard focus.
                     let focused = hit.and_then(|(surface, _)| {
-                        let is_diagnostic_layer = state.layer_shell_state.layer_surfaces()
+                        let is_layer = state.layer_shell_state.layer_surfaces()
                             .any(|layer| layer.alive() && layer.wl_surface() == &surface);
-                        if is_diagnostic_layer {
-                            state.xdg_shell_state.toplevel_surfaces().last()
-                                .map(|game| game.wl_surface().clone())
+                        if is_layer {
+                            let keyboard_interactivity = smithay::wayland::compositor::with_states(&surface, |states| {
+                                states.cached_state.get::<smithay::wayland::shell::wlr_layer::LayerSurfaceCachedState>()
+                                    .current().keyboard_interactivity
+                            });
+                            if keyboard_interactivity == smithay::wayland::shell::wlr_layer::KeyboardInteractivity::None {
+                                state.xdg_shell_state.toplevel_surfaces().last()
+                                    .map(|game| game.wl_surface().clone())
+                            } else {
+                                Some(surface)
+                            }
                         } else {
                             Some(surface)
                         }

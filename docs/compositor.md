@@ -153,3 +153,20 @@ entering fullscreen or DRM/KMS mode switching.
 The current game-first policy remains a one-output single-game prototype.
 It does not implement client-requested output selection, multiple windows
 placement, popup constraints or multiple monitor geometry.
+
+
+## Keyboard-interactive diagnostic overlay
+
+The optional `pokshell-layer --interactive --keyboard-interactive` enables
+pointer and **on-demand keyboard focus** while the visible panel is open.
+The new window policy allows a click on that panel to direct keyboard events
+there; pressing **Escape** emits `OVERLAY CLOSE` over pokshelld IPC.
+The layer changes its keyboard-interactivity hint to `None` when it hides,
+and pokcomp restores keyboard focus to the running XDG game. Ordinary
+`--interactive` continues to be pointer-only, so it never steals game
+keyboard focus.
+
+This is a diagnostic keyboard proof, not a production menu, controller
+binding system or proof of key input forwarding on UTM. CI exercises
+protocol setup, game/layer coexistence and lifecycle with the new option,
+but does **not** synthesize an actual Escape key event.

@@ -137,7 +137,8 @@ with tempfile.TemporaryDirectory(prefix="pokcomp-nested-") as dirname:
 
         # Subscribe to actual game/overlay state. Never force --show.
         layer = spawn(
-            ["../../graphics/wayland-layer/target/debug/pokshell-layer", "--interactive"],
+            ["../../graphics/wayland-layer/target/debug/pokshell-layer",
+             "--interactive", "--keyboard-interactive"],
             layer_env, layer_log,
         )
         wait_for(
@@ -194,6 +195,7 @@ with tempfile.TemporaryDirectory(prefix="pokcomp-nested-") as dirname:
                 in layer_log.read_text(errors="replace"),
             layer, layer_log, "visible diagnostic panel commit",
         )
+        assert layer.poll() is None, "keyboard-enabled layer crashed"
         assert "overlay=1" in control("STATUS")
         assert pid in control("STATUS"), "overlay opening replaced game PID"
         assert "OK OVERLAY CLOSED" in control("OVERLAY", "CLOSE")

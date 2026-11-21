@@ -14,7 +14,7 @@ use std::time::Duration;
 use wayland_client::{
     delegate_noop,
     globals::{registry_queue_init, GlobalListContents},
-    protocol::{wl_buffer, wl_compositor, wl_pointer, wl_region, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface},
+    protocol::{wl_buffer, wl_compositor, wl_keyboard, wl_pointer, wl_region, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface},
     Connection, Dispatch, QueueHandle,
 };
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
@@ -86,7 +86,9 @@ struct App {
     compositor: wl_compositor::WlCompositor,
     _seat: Option<wl_seat::WlSeat>,
     pointer: Option<wl_pointer::WlPointer>,
+    keyboard: Option<wl_keyboard::WlKeyboard>,
     interactive: bool,
+    keyboard_interactive: bool,
     control_socket: PathBuf,
     shm: wl_shm::WlShm,
     pool: Option<wl_shm_pool::WlShmPool>,
@@ -130,6 +132,17 @@ impl App {
         Ok(())
     }
 
+    fn request_overlay_close(&self, via: &str) {
+        let result = UnixStream::connect(&self.control_socket).and_then(|mut sock| {
+            sock.set_write_timeout(Some(Duration::from_secs(1)))?;
+            sock.write_all(b"OVERLAY CLOSE\n")
+        });
+        match result {
+            Ok(()) => eprintln!("pokshell-layer interactive close requested via={via}"),
+            Err(err) => eprintln!("pokshell-layer interactive close failed via={via}: {err}"),
+        }
+    }
+
     fn show(&mut self, visible: bool, qh: &QueueHandle<Self>) {
         if !self.configured || self.drawn == Some(visible) { return; }
 
@@ -144,6 +157,17 @@ impl App {
         }
         self.surface.set_input_region(Some(&region));
         region.destroy();
+        // Request focus only while shown, never keep focus on an
+        // invisible/transparent layer. The compositor restores the game.
+        if self.keyboard_interactive {
+            self.layer.set_keyboard_interactivity(
+                if visible {
+                    zwlr_layer_surface_v1::KeyboardInteractivity::OnDemand
+                } else {
+                    zwlr_layer_surface_v1::KeyboardInteractivity::None
+                }
+            );
+        }
         let buffer = if visible { &self.panel } else { &self.empty };
         if let Some(buffer) = buffer {
             self.surface.attach(Some(buffer), 0, 0);
@@ -172,10 +196,16 @@ impl Dispatch<wl_seat::WlSeat, ()> for App {
     fn event(state: &mut Self, seat: &wl_seat::WlSeat, event: wl_seat::Event,
         _: &(), _: &Connection, qh: &QueueHandle<Self>) {
         if let wl_seat::Event::Capabilities { capabilities } = event {
-            if capabilities.into_result().is_ok_and(|caps| caps.contains(wl_seat::Capability::Pointer))
-                && state.pointer.is_none()
-            {
-                state.pointer = Some(seat.get_pointer(qh, ()));
+            if let Ok(caps) = capabilities.into_result() {
+                if caps.contains(wl_seat::Capability::Pointer) && state.pointer.is_none() {
+                    state.pointer = Some(seat.get_pointer(qh, ()));
+                }
+                if state.keyboard_interactive
+                    && caps.contains(wl_seat::Capability::Keyboard)
+                    && state.keyboard.is_none()
+                {
+                    state.keyboard = Some(seat.get_keyboard(qh, ()));
+                }
             }
         }
     }
@@ -190,14 +220,22 @@ impl Dispatch<wl_pointer::WlPointer, ()> for App {
             if state.interactive && state.drawn == Some(true) {
                 // Single-item diagnostic menu: click closes the overlay.
                 // Games remain untouched: pokshelld owns their lifecycle.
-                let result = UnixStream::connect(&state.control_socket).and_then(|mut sock| {
-                    sock.set_write_timeout(Some(Duration::from_secs(1)))?;
-                    sock.write_all(b"OVERLAY CLOSE\n")
-                });
-                match result {
-                    Ok(()) => eprintln!("pokshell-layer interactive close requested"),
-                    Err(err) => eprintln!("pokshell-layer interactive close failed: {err}"),
-                }
+                state.request_overlay_close("pointer");
+            }
+        }
+    }
+}
+
+impl Dispatch<wl_keyboard::WlKeyboard, ()> for App {
+    fn event(state: &mut Self, _: &wl_keyboard::WlKeyboard, event: wl_keyboard::Event,
+        _: &(), _: &Connection, _: &QueueHandle<Self>) {
+        // EV_KEY code 1 = Escape. Keymap-independent diagnostic shortcut;
+        // production menus will use libxkbcommon and proper action routing.
+        if let wl_keyboard::Event::Key {
+            key: 1, state: wayland_client::WEnum::Value(wl_keyboard::KeyState::Pressed), ..
+        } = event {
+            if state.keyboard_interactive && state.drawn == Some(true) {
+                state.request_overlay_close("escape");
             }
         }
     }
@@ -229,14 +267,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut socket = default_socket();
     let mut force_visible = false;
     let mut interactive = false;
+    let mut keyboard_interactive = false;
     let mut args = env::args_os().skip(1);
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--socket") => socket = PathBuf::from(args.next().ok_or("--socket needs a value")?),
             Some("--show") => force_visible = true,
             Some("--interactive") => interactive = true,
+            Some("--keyboard-interactive") => {
+                keyboard_interactive = true;
+                interactive = true;
+            },
             Some("--help") => {
-                println!("pokshell-layer [--socket PATH] [--show] [--interactive]\nRequires Wayland compositor with wlr-layer-shell-v1");
+                println!("pokshell-layer [--socket PATH] [--show] [--interactive] [--keyboard-interactive]\nRequires Wayland compositor with wlr-layer-shell-v1");
                 return Ok(());
             }
             _ => return Err(format!("unknown argument: {}", arg.to_string_lossy()).into()),
@@ -272,7 +315,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     surface.commit(); // No buffer until first Configure.
 
     let mut app = App {
-        surface, layer, compositor, _seat: seat, pointer: None, interactive, control_socket: socket,
+        surface, layer, compositor, _seat: seat, pointer: None, keyboard: None,
+        interactive, keyboard_interactive, control_socket: socket,
         shm, pool: None, empty: None, panel: None, backing: None,
         configured: false, closed: false, width: PANEL_WIDTH, height: 720, drawn: None,
     };
