@@ -150,3 +150,6 @@ its acceptance gate and evidence class are recorded. Prefer small cohesive
 commits that leave `main` buildable; new work is direct to `main` in this
 project **by user instruction**, with x86-64/ARM64 CI as a mandatory guard.
 No PR ceremony; no claims of hardware success from compilation.
+
+P1-N05 integration: shared Wayland protocol/render core and experimental native
+Wayland socket/GBM frame submission added; native runtime acceptance pending.

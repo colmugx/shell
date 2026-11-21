@@ -113,3 +113,12 @@ kms_scanout_test=complete. Confirm the original TTY comes back. If not,
 switch VT or restart the graphical session; record the failure rather than
 claiming successful restore. Do not run as root or inside KDE.
 This is not a native Wayland game session yet.
+
+## P1-N05 experimental native Wayland session
+
+`poknative --wayland` uses the same XDG/layer-shell compositor core as
+`pokcomp`, but queues composed frames to the native GBM/KMS swapchain.
+It remains a single-output experiment; SHM clients, keyboard and mouse
+are the initial target. DMA-BUF client negotiation, touch/controller
+isolation, and hardware suspend/recovery are not yet complete. Do not
+claim native game acceptance before the TTY scanout test passes.

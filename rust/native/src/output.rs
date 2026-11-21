@@ -43,3 +43,15 @@ pub fn queue(surface: &mut Buffered, renderer: &mut GlesRenderer,
     surface.queue_buffer(None, None, frame_id)?;
     Ok(())
 }
+
+pub fn queue_wayland(surface: &mut Buffered, renderer: &mut GlesRenderer,
+    server: &mut pokshell_wayland::Server, size: smithay::utils::Size<i32, Physical>)
+    -> Result<(), Box<dyn Error>>
+{
+    let (mut buffer, _) = surface.next_buffer()?;
+    let mut target = renderer.bind(&mut buffer)?;
+    let sync = server.state.render(renderer, &mut target, size, Transform::Normal)?;
+    drop(target);
+    surface.queue_buffer(Some(sync), None, 0)?;
+    Ok(())
+}

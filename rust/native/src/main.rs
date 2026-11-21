@@ -60,6 +60,7 @@ struct MonitorState {
     drm: Option<DrmDevice>,
     vblanks: usize,
     drm_error: bool,
+    server: Option<pokshell_wayland::Server>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -67,6 +68,7 @@ struct Options {
     card: Option<PathBuf>,
     monitor_seconds: Option<u64>,
     scanout_seconds: Option<u64>,
+    wayland: bool,
 }
 
 fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, String> {
@@ -92,12 +94,16 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, St
                 if !(1..=15).contains(&value) { return Err("--scanout-seconds must be in 1..=15".into()); }
                 opts.scanout_seconds = Some(value);
             },
+            Some("--wayland") if !opts.wayland => opts.wayland = true,
             Some("--help") | Some("-h") => return Ok(None),
             _ => return Err(format!("unknown/duplicate argument: {}", arg.to_string_lossy())),
         }
     }
     if opts.scanout_seconds.is_some() && opts.monitor_seconds.is_some() {
         return Err("--scanout-seconds and --monitor-seconds are mutually exclusive".into());
+    }
+    if opts.wayland && (opts.scanout_seconds.is_some() || opts.monitor_seconds.is_some()) {
+        return Err("--wayland is mutually exclusive with diagnostic modes".into());
     }
     Ok(Some(opts))
 }
@@ -165,7 +171,11 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
         match event {
             InputEvent::DeviceAdded { .. } => eprintln!("poknative: libinput device added"),
             InputEvent::DeviceRemoved { .. } => eprintln!("poknative: libinput device removed"),
-            _ => {},
+            _ => {
+                if state.gate.may_submit() {
+                    if let Some(server) = state.server.as_mut() { server.state.input(event); }
+                }
+            },
         }
     })?;
     seat_events.handle().insert_source(notifier, move |event, _, state| {
@@ -285,7 +295,7 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
     // until a real atomic/legacy modeset and buffer ownership are proven.
     println!("kms_submit_permitted={}", state.gate.may_submit());
     println!("input_backend=libinput drm_hotplug=udev seat_events=libseat");
-    if let Some(seconds) = opts.scanout_seconds {
+    if opts.scanout_seconds.is_some() || opts.wayland {
         if !drm.is_atomic() { return Err("scanout test requires atomic KMS".into()); }
         // The bounded test is deliberately single-output. Never disable or
         // remap other connected displays in this first hardware experiment.
@@ -319,6 +329,55 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
             || SHUTDOWN.load(Ordering::Acquire) {
             return Err("seat/output changed before first scanout".into());
         }
+        if opts.wayland {
+            use smithay::reexports::calloop::{generic::Generic, Interest, Mode as PollMode, PostAction};
+            use smithay::{output::Mode, utils::Transform};
+            let size = (i32::from(mode.size().0), i32::from(mode.size().1)).into();
+            let server = pokshell_wayland::Server::new(
+                Mode { size, refresh: (mode.vrefresh() as i32).saturating_mul(1000) },
+                Transform::Normal, "pokshell-native", None)?;
+            for fd in server.poll_fds()? {
+                seat_events.handle().insert_source(Generic::new(fd, Interest::READ, PollMode::Level),
+                    |_, _, _| Ok(PostAction::Continue))?;
+            }
+            println!("WAYLAND_DISPLAY={}", server.socket_name());
+            state.server = Some(server);
+            let mut pending = false;
+            let mut observed = state.vblanks;
+            let mut submitted_at = Instant::now();
+            state.gate.configured();
+            loop {
+                if SHUTDOWN.load(Ordering::Acquire) { break; }
+                if !state.gate.may_submit() || !session.is_active() || state.drm_error {
+                    return Err("native session lost seat or output; stopping".into());
+                }
+                let server = state.server.as_mut().expect("native Wayland server");
+                if state.vblanks != observed {
+                    observed = state.vblanks;
+                    if buffered.frame_submitted()?.is_some() {
+                        pending = false;
+                        server.frame_done();
+                    }
+                }
+                server.dispatch()?;
+                if !pending && server.dirty() {
+                    output::queue_wayland(&mut buffered, &mut renderer, server, size)?;
+                    pending = true;
+                    submitted_at = Instant::now();
+                    server.rendered();
+                }
+                if pending && submitted_at.elapsed() >= Duration::from_secs(3) {
+                    return Err("native Wayland page flip timeout".into());
+                }
+                // Socket/DRM/input readiness wakes the event loop. No
+                // recurring raster or buffer submission when the UI is idle.
+                seat_events.dispatch(Duration::from_millis(if pending { 100 } else { 1000 }), &mut state)?;
+            }
+            drop(buffered);
+            println!("native_wayland_session=stopped");
+            return Ok(());
+        }
+        let seconds = opts.scanout_seconds.expect("diagnostic duration");
         // queue_buffer performs the first modeset/commit; the swapchain
         // keeps framebuffer ownership until its matching vblank.
         output::queue(&mut buffered, &mut renderer, mode.size(), 0)?;
@@ -382,7 +441,7 @@ fn main() {
     let opts = match parse(env::args_os().skip(1)) {
         Ok(Some(opts)) => opts,
         Ok(None) => {
-            println!("poknative [--card /dev/dri/card0] [--monitor-seconds 1..3600 | --scanout-seconds 1..15]\nNative libseat + DRM/GBM/udev/libinput initialization on a Linux TTY.\nDefault: no modeset. Explicit scanout test: two diagnostic frames, then exits. Do not run inside KDE.");
+            println!("poknative [--card /dev/dri/card0] [--monitor-seconds 1..3600 | --scanout-seconds 1..15 | --wayland]\nNative libseat + DRM/GBM/udev/libinput initialization on a Linux TTY.\nDefault: no modeset. Explicit scanout test: two diagnostic frames, then exits. Do not run inside KDE.");
             return;
         }
         Err(err) => { eprintln!("poknative: {err}"); std::process::exit(2); }
@@ -412,6 +471,8 @@ mod tests {
     fn parses_without_probing_hardware() {
         assert!(opts(&["--help"]).unwrap().is_none());
         assert!(opts(&["--unknown"]).is_err());
+        assert!(opts(&["--wayland"]).unwrap().unwrap().wayland);
+        assert!(opts(&["--wayland", "--scanout-seconds", "5"]).is_err());
         assert!(opts(&["--scanout-seconds", "0"]).is_err());
         assert!(opts(&["--scanout-seconds", "16"]).is_err());
         assert!(opts(&["--scanout-seconds", "5", "--monitor-seconds", "1"]).is_err());

@@ -24,3 +24,6 @@ Evidence is tracked per implementation, per machine and per hardware reference.
 Current Rust daemon uses a user-owned local Unix socket (0600), fixed configured game executable, no shell interpolation, and no TCP API. It is a prototype; it does not yet implement sandboxing, privilege separation, durable signal-independent service restart supervision, durable/replayable events, or a robust cgroup-based descendant process lifecycle. `GAME STOP` uses process-group SIGTERM and a short SIGKILL escalation window. Termination of descendants after the main game process exits independently remains to be addressed. Do not expose this as a privileged system-wide service.
 
 The historical C framebuffer program is not suitable as a production display manager.
+
+P1-N05: shared XDG/layer-shell core reused by nested and native binaries;
+actual native Wayland rendering and physical input remain unverified.

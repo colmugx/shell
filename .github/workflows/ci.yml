@@ -152,7 +152,7 @@ jobs:
       - name: Install DRM GBM and libseat development libraries
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends pkg-config libdrm-dev libgbm-dev libseat-dev libxkbcommon-dev libudev-dev libinput-dev libegl1-mesa-dev libgles2-mesa-dev
+          sudo apt-get install -y --no-install-recommends pkg-config libdrm-dev libgbm-dev libseat-dev libxkbcommon-dev libudev-dev libinput-dev libegl1-mesa-dev libgles2-mesa-dev libwayland-dev
       - name: Compile native Linux libseat DRM and GBM bring-up
         run: cargo build
       - name: Unit tests (no device ownership in CI)

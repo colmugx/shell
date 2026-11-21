@@ -1,0 +1,11 @@
+[package]
+name = "pokshell-wayland"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+rust-version = "1.82"
+[workspace]
+[dependencies]
+smithay = { version = "=0.7.0", default-features = false, features = ["wayland_frontend", "desktop", "renderer_gl"] }
+wayland-server = "0.31.13"
+wayland-protocols = { version = "0.32.13", features = ["server"] }

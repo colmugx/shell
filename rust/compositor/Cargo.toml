@@ -15,3 +15,5 @@ wayland-server = "0.31.13"
 wayland-protocols = { version = "0.32.13", features = ["server"] }
 winit = { version = "0.30.0", default-features = false, features = ["wayland", "wayland-dlopen", "x11", "rwh_06"] }
 tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
+
+pokshell-wayland = { path = "../wayland-core" }
