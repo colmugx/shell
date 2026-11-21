@@ -61,6 +61,21 @@ jobs:
         run: cargo test
       - name: CLI help
         run: ./target/debug/pokshell-layer --help
+      - name: System menu refuses host-display fallback
+        run: |
+          set -eu
+          if ./target/debug/pokshell-layer --menu; then
+            echo "ERROR menu accepted missing --display" >&2
+            exit 1
+          fi
+          if ./target/debug/pokshell-layer --menu --display wayland-0; then
+            echo "ERROR menu accepted KDE display" >&2
+            exit 1
+          fi
+          if ./target/debug/pokshell-layer --menu --display pokshell-missing; then
+            echo "ERROR menu accepted missing pokcomp socket" >&2
+            exit 1
+          fi
       - name: Install headless wlroots compositor
         if: matrix.runner == 'ubuntu-24.04'
         run: |
