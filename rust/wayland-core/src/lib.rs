@@ -12,10 +12,12 @@ use std::os::fd::{AsFd, OwnedFd as PollFd};
 
 use smithay::{
     delegate_compositor, delegate_data_device, delegate_output, delegate_seat, delegate_shm, delegate_xdg_shell,
-    delegate_layer_shell,
+    delegate_layer_shell, delegate_dmabuf,
     backend::{
         input::{AbsolutePositionEvent, ButtonState, Event, InputBackend, InputEvent, KeyboardKeyEvent, PointerButtonEvent, PointerMotionEvent},
+        allocator::dmabuf::Dmabuf,
         renderer::{
+            ImportDma, ImportEgl,
             element::{surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement}, Kind},
             gles::GlesRenderer,
             utils::{draw_render_elements, on_commit_buffer_handler},
@@ -44,6 +46,7 @@ use smithay::{
             xdg::{PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState},
         },
         shm::{ShmHandler, ShmState},
+        dmabuf::{DmabufHandler, DmabufState, DmabufGlobal, ImportNotifier},
     },
 };
 use wayland_protocols::xdg::shell::server::xdg_toplevel;
@@ -69,6 +72,27 @@ pub struct PokCompositor {
     dirty: bool,
     seen_game_frame: bool,
     seen_layer_frame: bool,
+    dmabuf_state: DmabufState,
+    pending_dmabufs: Vec<(Dmabuf, ImportNotifier)>,
+}
+
+impl DmabufHandler for PokCompositor {
+    fn dmabuf_state(&mut self) -> &mut DmabufState { &mut self.dmabuf_state }
+
+    fn dmabuf_imported(
+        &mut self, _global: &DmabufGlobal, dmabuf: Dmabuf, notifier: ImportNotifier,
+    ) {
+        // Import must be performed by the actual GLES renderer that owns
+        // this compositor's EGL context; do not unconditionally acknowledge
+        // client buffers or block the Wayland dispatcher on GPU operations.
+        const MAX_PENDING_IMPORTS: usize = 128;
+        if self.pending_dmabufs.len() >= MAX_PENDING_IMPORTS {
+            eprintln!("pokshell: DMA-BUF import queue full, rejecting buffer");
+            notifier.failed();
+            return;
+        }
+        self.pending_dmabufs.push((dmabuf, notifier));
+    }
 }
 
 impl PokCompositor {
@@ -292,6 +316,7 @@ impl SeatHandler for PokCompositor {
 struct ClientState {
     compositor_state: CompositorClientState,
     disconnected: Arc<std::sync::atomic::AtomicBool>,
+    dmabuf_enabled: bool,
 }
 impl ClientData for ClientState {
     fn initialized(&self, _id: ClientId) {}
@@ -511,6 +536,8 @@ impl Server {
         seat,
         pointer_position: (0.0, 0.0).into(),
         dirty: true, seen_game_frame: false, seen_layer_frame: false,
+        dmabuf_state: DmabufState::new(),
+        pending_dmabufs: Vec::new(),
     };
     state.seat.add_keyboard(Default::default(), 200, 200)?;
     state.seat.add_pointer();
@@ -521,8 +548,52 @@ impl Server {
             None => ListeningSocket::bind_auto("pokshell", 1..128)?,
         };
         Ok(Self { display, listener, state, start: Instant::now(),
-            disconnected: Arc::new(std::sync::atomic::AtomicBool::new(false)) })
+            disconnected: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            dmabuf_enabled: false })
     }
+
+    /// Register a dma-buf global only after the backend's renderer is ready.
+    /// EGL on older Mesa/UTM may lack a render node; v3 global + wl_drm
+    /// binding supports that case without pretending to have v4 feedback.
+    pub fn enable_dmabuf(&mut self, renderer: &mut GlesRenderer) {
+        if self.dmabuf_enabled { return; }
+        let formats = renderer.dmabuf_formats();
+        if formats.is_empty() {
+            eprintln!("pokshell: GLES renderer advertises no DMA-BUF formats; SHM only");
+            return;
+        }
+        let _global = self.state.dmabuf_state
+            .create_global::<PokCompositor>(&self.display.handle(), formats);
+        self.dmabuf_enabled = true;
+        eprintln!("pokshell: linux-dmabuf-v1 global registered");
+        if let Err(err) = renderer.bind_wl_display(&self.display.handle()) {
+            // May be unsupported by the EGL driver. Linux dma-buf remains
+            // available for clients which can import it directly.
+            eprintln!("pokshell: EGL Wayland display binding unavailable: {err}");
+        }
+    }
+
+    /// Complete buffer imports on the same renderer used for composition.
+    /// A buffer is never acknowledged before the GPU import succeeds.
+    pub fn process_dmabufs(&mut self, renderer: &mut GlesRenderer) -> usize {
+        let pending = std::mem::take(&mut self.state.pending_dmabufs);
+        let total = pending.len();
+        for (dmabuf, notifier) in pending {
+            match renderer.import_dmabuf(&dmabuf, None) {
+                Ok(_texture) => {
+                    if notifier.successful::<PokCompositor>().is_err() {
+                        eprintln!("pokshell: DMA-BUF client disconnected before import reply");
+                    }
+                }
+                Err(err) => {
+                    eprintln!("pokshell: rejecting unimportable DMA-BUF: {err}");
+                    notifier.failed();
+                }
+            }
+        }
+        total
+    }
+
     pub fn socket_name(&self) -> String {
         self.listener.socket_name().expect("named listener").to_string_lossy().into_owned()
     }
@@ -565,4 +636,5 @@ delegate_seat!(PokCompositor);
 delegate_data_device!(PokCompositor);
 delegate_output!(PokCompositor);
 delegate_layer_shell!(PokCompositor);
+delegate_dmabuf!(PokCompositor);
 

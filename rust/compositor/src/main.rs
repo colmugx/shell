@@ -39,6 +39,7 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
     let (mut backend, mut host) = winit::init::<GlesRenderer>()?;
     let mut server = Server::new(Mode { size: backend.window_size(), refresh: 60_000 },
         Transform::Flipped180, "pokshell-nested", options.socket_name.as_deref())?;
+    server.enable_dmabuf(backend.renderer());
     let name = server.socket_name();
     println!("WAYLAND_DISPLAY={name}");
     eprintln!("pokcomp: nested compositor listening on {name}");
@@ -50,6 +51,10 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
         });
         if let PumpStatus::Exit(_) = status { return Ok(()); }
         server.dispatch()?;
+        // Notify EGL/GBM clients only after the real renderer can import
+        // their buffers. This also happens while the screen is unchanged.
+        let _imported = server.process_dmabufs(backend.renderer());
+        server.flush()?;
         // No game/overlay commit and no host resize: do not allocate,
         // render or submit another GPU framebuffer. Clients schedule their
         // next frame only after the previous presentation callback.

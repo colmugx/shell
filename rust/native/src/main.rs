@@ -335,9 +335,10 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
             use smithay::reexports::calloop::{generic::Generic, Interest, Mode as PollMode, PostAction};
             use smithay::{output::Mode, utils::Transform};
             let size = (i32::from(mode.size().0), i32::from(mode.size().1)).into();
-            let server = pokshell_wayland::Server::new(
+            let mut server = pokshell_wayland::Server::new(
                 Mode { size, refresh: (mode.vrefresh() as i32).saturating_mul(1000) },
                 Transform::Normal, "pokshell-native", None)?;
+            server.enable_dmabuf(&mut renderer);
             for fd in server.poll_fds()? {
                 seat_events.handle().insert_source(Generic::new(fd, Interest::READ, PollMode::Level),
                     |_, _, _| Ok(PostAction::Continue))?;
@@ -362,6 +363,8 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
                     }
                 }
                 server.dispatch()?;
+                let _imports = server.process_dmabufs(&mut renderer);
+                server.flush()?;
                 if pump.should_render(state.gate.active(), server.dirty()) {
                     output::queue_wayland(&mut buffered, &mut renderer, server, size)?;
                     if !pump.has_submitted() {

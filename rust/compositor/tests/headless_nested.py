@@ -105,6 +105,14 @@ with tempfile.TemporaryDirectory(prefix="pokcomp-nested-") as dirname:
             compositor, comp_log, "nested pokcomp",
         )
         assert compositor.poll() is None
+        # Regression gate for EGL/OpenGL game clients: advertising only
+        # wl_shm is insufficient. The nested Smithay renderer must expose
+        # real linux-dmabuf formats, not fake import acknowledgements.
+        registry = subprocess.run(
+            ["wayland-info"], env={**nested_env, "WAYLAND_DISPLAY": "pokshell-test"},
+            capture_output=True, text=True, timeout=12, check=True,
+        )
+        assert "zwp_linux_dmabuf_v1" in registry.stdout, registry.stdout[-6000:]
         layer_env = {**nested_env, "WAYLAND_DISPLAY": "pokshell-test"}
         fullscreen_mode = "--sdl2-fullscreen" in sys.argv
         sdl_mode = "--sdl2" in sys.argv or fullscreen_mode
