@@ -135,3 +135,19 @@ To check whether disabling libdecor affects SuperTux independently, run:
 A Wayland trace captures protocol requests/replies but does not identify
 a compositor GPU issue without evidence of a window/buffer. CI builds and
 headless tests do not establish the native SDL/GL outcome.
+
+### P1-N05 autonomous native-event-loop protocol regression
+
+A new protocol-only harness (pokwayland-protocol) uses the shared Smithay
+Wayland Server and the same calloop read-ready dispatch used by the native
+backend. It creates no EGL renderer, DRM device, libseat session or frame.
+The existing SDL2 Wayland fixture has an opt-in --window-only mode to test
+SDL_Init(VIDEO), SDL_CreateWindow, and XDG toplevel without a renderer.
+The Linux x86-64/ARM64 compositor CI jobs now build this harness and run a
+bounded Python integration test; no user TTY interaction is required.
+
+Native mode's Wayland FD callbacks now directly dispatch client requests
+on readiness instead of solely returning PostAction::Continue. This avoids
+depending on an unrelated DRM/seat/input wakeup to progress a blocking
+SDL wl_display_roundtrip. Native user-visible SDL/SuperTux success remains
+unverified until physical/UTM evidence, distinct from the new CI gate.

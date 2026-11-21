@@ -107,13 +107,17 @@ jobs:
       - name: Install EGL and Wayland build prerequisites
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends pkg-config libwayland-dev libegl1-mesa-dev libgles2-mesa-dev libxkbcommon-dev
+          sudo apt-get install -y --no-install-recommends pkg-config libwayland-dev libegl1-mesa-dev libgles2-mesa-dev libxkbcommon-dev libsdl2-2.0-0
       - name: Build nested Smithay compositor
         run: cargo build
       - name: Test command-line argument validation
         run: cargo test
       - name: Help works without a graphical session
         run: ./target/debug/pokcomp --help
+      - name: Build protocol-only native-style calloop server
+        run: cargo build --manifest-path ../wayland-core/Cargo.toml --bin pokwayland-protocol
+      - name: SDL2 native-style Wayland initialization and XDG handshake (no DRM)
+        run: python3 tests/headless_protocol.py
       - name: Build existing layer client for integration
         if: matrix.runner == 'ubuntu-24.04'
         run: cargo build --manifest-path ../../graphics/wayland-layer/Cargo.toml

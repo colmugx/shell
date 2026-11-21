@@ -357,8 +357,18 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
                 Transform::Normal, "pokshell-native", None)?;
             server.enable_dmabuf(&mut renderer);
             for fd in server.poll_fds()? {
+                // Dispatch the real Wayland protocol as soon as its eventfd
+                // or listening socket becomes readable. A callback that only
+                // returns Continue delays roundtrip replies until some
+                // unrelated libseat/DRM/input event wakes the outer loop.
                 seat_events.handle().insert_source(Generic::new(fd, Interest::READ, PollMode::Level),
-                    |_, _, _| Ok(PostAction::Continue))?;
+                    |_, _, state| {
+                        if let Some(server) = state.server.as_mut() {
+                            server.dispatch().map_err(|err|
+                                std::io::Error::other(format!("Wayland dispatch: {err}")))?;
+                        }
+                        Ok(PostAction::Continue)
+                    })?;
             }
             println!("WAYLAND_DISPLAY={}", server.socket_name());
             state.server = Some(server);

@@ -51,9 +51,9 @@ def check(code, operation):
     if code != 0:
         raise RuntimeError(f"{operation} failed: {sdl.SDL_GetError().decode()}")
 
-if any(arg not in ("--fullscreen", "--opengl", "--trace-wayland", "--no-libdecor")
+if any(arg not in ("--fullscreen", "--opengl", "--trace-wayland", "--no-libdecor", "--window-only")
        for arg in sys.argv[1:]):
-    raise SystemExit("usage: sdl2_client.py [--fullscreen] [--opengl] [--trace-wayland] [--no-libdecor]")
+    raise SystemExit("usage: sdl2_client.py [--fullscreen] [--opengl] [--trace-wayland] [--no-libdecor] [--window-only]")
 # WAYLAND_DEBUG is opt-in: the entire registry/sync exchange is printed by
 # libwayland-client rather than inferred from an absent xdg_toplevel.
 if "--trace-wayland" in sys.argv:
@@ -76,6 +76,14 @@ try:
                                   4 | (2 if opengl else 0))  # SHOWN | OPENGL
     if not window:
         raise RuntimeError("SDL_CreateWindow: " + sdl.SDL_GetError().decode())
+    if "--window-only" in sys.argv:
+        # Exercises SDL_Init and SDL_CreateWindow (including XDG configure)
+        # without requesting a renderer or a presentation frame. The isolated
+        # protocol CI harness intentionally has no GPU or KMS backend.
+        print("pokshell-sdl: xdg_window_created window_only=1", flush=True)
+        sdl.SDL_DestroyWindow(window)
+        sdl.SDL_Quit()
+        sys.exit(0)
     context = None
     try:
         print("pokshell-sdl: xdg_window_created", flush=True)
