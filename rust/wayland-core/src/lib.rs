@@ -498,6 +498,7 @@ pub struct Server {
     pub state: PokCompositor,
     start: Instant,
     disconnected: Arc<std::sync::atomic::AtomicBool>,
+    dmabuf_enabled: bool,
 }
 
 impl Server {
@@ -558,7 +559,7 @@ impl Server {
     pub fn enable_dmabuf(&mut self, renderer: &mut GlesRenderer) {
         if self.dmabuf_enabled { return; }
         let formats = renderer.dmabuf_formats();
-        if formats.is_empty() {
+        if formats.iter().next().is_none() {
             eprintln!("pokshell: GLES renderer advertises no DMA-BUF formats; SHM only");
             return;
         }
