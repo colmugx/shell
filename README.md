@@ -23,7 +23,7 @@ Read [Linux-first strategy and language choices](docs/boot-and-languages.md) and
 - `pokctl`: command-line control client, including live `WATCH` event stream
 - unit tests and Linux IPC/process integration tests
 
-**This is not yet a compositor.** The Rust control plane changes overlay state. A separate, experimental Wayland layer client can display a diagnostic surface under an existing wlroots compositor; it is not the finished shell. No PocketJS host, MoonBit runtime or WAMR worker is currently linked.
+**The Rust control plane is independent of the compositor.** It changes overlay state. A separate, experimental Wayland layer client can display a diagnostic surface under an existing wlroots compositor; the production shell is still in development. No PocketJS host, MoonBit runtime or WAMR worker is currently linked.
 
 ```sh
 cd rust
@@ -44,7 +44,14 @@ Watch state changes in a third terminal with `cargo run --bin pokctl -- WATCH`. 
 
 ## Experimental native Wayland overlay transport
 
-The standalone Rust client at [`graphics/wayland-layer`](graphics/wayland-layer) creates an independent wl_shm Layer Surface using the wlroots `zwlr_layer_shell_v1` protocol. It watches `pokshelld WATCH` for overlay state and switches between transparent/diagnostic buffers without taking input focus. This is a **Wayland protocol and layering experiment**, not a polished UI, full-screen game compositor or hardware firmware. It has compiled on Linux x86-64 / ARM64 and passed a **headless Sway layer-configure smoke test**, but a visible UTM game/overlay integration test is still pending. [Build and UTM test instructions](docs/wayland-transport.md).
+The standalone Rust client at [`graphics/wayland-layer`](graphics/wayland-layer) creates an independent wl_shm Layer Surface using the wlroots `zwlr_layer_shell_v1` protocol. It watches `pokshelld WATCH` for overlay state and supports both the old
+transparent diagnostic surface and a `--menu` mode with text, selection,
+keyboard/mouse navigation and fixed Resume/Restart/Stop commands. An optional
+`--joystick /dev/input/js0` prototype reads Linux joystick events as a normal
+user without exclusive device capture. This is not a production controller
+input stack or handheld firmware. Headless Wayland CI verifies protocol
+coexistence, while the user's KDE/UTM acceptance has confirmed game window
+ownership, fullscreen resizing and keyboard focus restoration. [Build and UTM test instructions](docs/wayland-transport.md).
 
 ## Own compositor: first nested Smithay prototype
 
@@ -58,8 +65,9 @@ and overlay visibility changes without terminating the game. An experimental
 pointer routing now honors surface input regions. Game launch with
 `pokshelld --game-wayland-display pokshell-N` explicitly targets the
 nested compositor's socket and disables KDE/X11 fallback (see
-[UTM acceptance](docs/kde-utm-acceptance.md)). **No native
-DRM/KMS, UTM visible rendering, or interactive overlay is claimed.** See the
+[UTM acceptance](docs/kde-utm-acceptance.md)). **The nested UTM game display and diagnostic overlay input have been
+user-accepted; the new graphical game menu still needs UTM acceptance.
+No native DRM/KMS, exclusive gamepad focus or handheld graphics is claimed.** See the
 [compositor build and manual test guide](docs/compositor.md).
 
 ## Historical C framebuffer experiment

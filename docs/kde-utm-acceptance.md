@@ -1,6 +1,9 @@
 # KDE Plasma Wayland / Debian ARM64 UTM acceptance
 
-This is a **manual acceptance procedure**. The project owner reported two checks passed in UTM on 2026-11-21: SuperTux now opens inside the nested Smithay window, and `pokctl QUIT` exits the game/session daemon without closing the separate Smithay window. Other checks below remain open until explicitly observed.
+This is a **manual acceptance procedure**. The project owner reported two checks passed in UTM on 2026-11-21: SuperTux now opens inside the nested Smithay window, and `pokctl QUIT` exits the game/session daemon without closing the separate Smithay window. The same user subsequently confirmed that the prior fullscreen/resize,
+Overlay Escape-close and game keyboard focus recovery acceptance steps
+all behaved normally. The newer `--menu` and optional joystick capabilities
+still require separate acceptance.
 Run as the *logged-in non-root Plasma user*. Do **not** launch a DRM/KMS
 compositor, run `sudo sway`, or replace the current KWin session.
 
@@ -258,8 +261,9 @@ Manual UTM gate:
 5. Reopen; select STOP GAME. Verify `mode=home`, game stopped and the
    compositor remains open.
 
-**Not yet implemented or accepted:** physical gamepad navigation, gamepad
-input capture/exclusivity, multi-display, native DRM/KMS.
+**Not yet accepted:** the new graphical system menu in UTM, physical gamepad
+navigation, gamepad input exclusivity, multi-display and native DRM/KMS.
+Optional joystick event decoding exists but hardware input is not verified.
 
 ## Optional Linux joystick navigation
 
