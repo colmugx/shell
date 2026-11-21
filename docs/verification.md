@@ -95,3 +95,43 @@ errors. SuperTux's SDL renderer is not assumed to use wl_shm.
 If SDL2/SHM passes but GL fails: inspect EGL/DMABUF buffer exchange.
 If SDL2/GL passes but SuperTux fails: inspect game GL requirements.
 If SDL2/SHM fails but raw XDG/SHM passed: inspect SDL's Wayland flow.
+
+### P1-N05 protocol-stage stall (2026-11-21 UTM screenshots)
+
+User provided UTM logs for SDL2/SHM and SuperTux (SDL renderer attempt).
+Both accepted a fourth Wayland connection and remained alive, yet showed
+xdg_toplevels=0, pending_dmabufs=0, native_frames_submitted=0 and no XDG role.
+The SDL2 test did not print video_initialized, a marker after SDL_Init(VIDEO).
+The working pokxdg-smoke proof already isolates an XDG/SHM server path that
+does reach KMS scanout; current hypothesis is an SDL2 video initialization
+stall, **not** a proven EGL/DMA-BUF import failure. Ctrl+Alt+Backspace yielded
+the expected downstream BrokenPipe and killed owned game process.
+
+Additional diagnostics:
+- The native server startup status reports dispatched_requests in addition
+  to accepted_clients, distinguishing a connected but silent client from a
+  client actively exchanging registry/sync requests.
+- The SDL2 ABI test prints before_video_init and accepts --trace-wayland,
+  which sets WAYLAND_DEBUG=client inside the test process before SDL_Init.
+- It also accepts --no-libdecor, which sets SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR=0
+  only inside that test client to isolate possible libdecor initialization.
+  Neither option is applied automatically to games or production processes.
+
+Repeat the **SDL2 SHM** test first, using both diagnostic arguments:
+
+    ./rust/target/debug/poksession --native --card /dev/dri/card0 \
+      --game /usr/bin/python3 \
+      --game-arg "$PWD/rust/compositor/tests/sdl2_client.py" \
+      --game-arg --trace-wayland --game-arg --no-libdecor \
+      > "$HOME/pokshell-sdl-init-trace.log" 2>&1
+
+To check whether disabling libdecor affects SuperTux independently, run:
+
+    SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR=0 \
+      ./rust/target/debug/poksession --native --card /dev/dri/card0 \
+      --game /usr/games/supertux2 --game-arg --renderer --game-arg sdl \
+      > "$HOME/pokshell-supertux-no-libdecor.log" 2>&1
+
+A Wayland trace captures protocol requests/replies but does not identify
+a compositor GPU issue without evidence of a window/buffer. CI builds and
+headless tests do not establish the native SDL/GL outcome.

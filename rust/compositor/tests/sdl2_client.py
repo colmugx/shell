@@ -51,8 +51,21 @@ def check(code, operation):
     if code != 0:
         raise RuntimeError(f"{operation} failed: {sdl.SDL_GetError().decode()}")
 
-if any(arg not in ("--fullscreen", "--opengl") for arg in sys.argv[1:]):
-    raise SystemExit("usage: sdl2_client.py [--fullscreen] [--opengl]")
+if any(arg not in ("--fullscreen", "--opengl", "--trace-wayland", "--no-libdecor")
+       for arg in sys.argv[1:]):
+    raise SystemExit("usage: sdl2_client.py [--fullscreen] [--opengl] [--trace-wayland] [--no-libdecor]")
+# WAYLAND_DEBUG is opt-in: the entire registry/sync exchange is printed by
+# libwayland-client rather than inferred from an absent xdg_toplevel.
+if "--trace-wayland" in sys.argv:
+    os.environ["WAYLAND_DEBUG"] = "client"
+# Diagnostic only. Some SDL2 builds initialize libdecor before returning
+# from SDL_Init(VIDEO). Skipping it isolates a libdecor-side startup stall.
+if "--no-libdecor" in sys.argv:
+    os.environ["SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR"] = "0"
+print("pokshell-sdl: before_video_init "
+      f"trace={int('--trace-wayland' in sys.argv)} "
+      f"libdecor_disabled={int('--no-libdecor' in sys.argv)}",
+      flush=True)
 opengl = "--opengl" in sys.argv
 check(sdl.SDL_Init(0x20), "SDL_Init(VIDEO)")
 print(f"pokshell-sdl: video_initialized driver={sdl.SDL_GetCurrentVideoDriver()!r} backend={'opengl' if opengl else 'shm'}", flush=True)

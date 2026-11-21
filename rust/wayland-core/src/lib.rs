@@ -501,6 +501,7 @@ pub struct Server {
     disconnected: Arc<std::sync::atomic::AtomicBool>,
     dmabuf_enabled: bool,
     accepted_clients: u64,
+    dispatched_requests: u64,
 }
 
 impl Server {
@@ -552,7 +553,7 @@ impl Server {
         };
         Ok(Self { display, listener, state, start: Instant::now(),
             disconnected: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            dmabuf_enabled: false, accepted_clients: 0 })
+            dmabuf_enabled: false, accepted_clients: 0, dispatched_requests: 0 })
     }
 
     /// Register a dma-buf global only after the backend's renderer is ready.
@@ -600,6 +601,9 @@ impl Server {
     /// Do not modeset an empty initial output until a game has presented a
     /// drawable surface. This avoids replacing the Linux TTY with black.
     pub fn accepted_clients(&self) -> u64 { self.accepted_clients }
+    /// Number of Wayland client protocol requests actually dispatched.
+    /// Connections alone do not prove SDL's registry/sync negotiation ran.
+    pub fn dispatched_requests(&self) -> u64 { self.dispatched_requests }
 
     pub fn client_counts(&self) -> (usize, usize, usize) {
         (self.state.xdg_shell_state.toplevel_surfaces().len(),
@@ -631,7 +635,8 @@ impl Server {
             self.accepted_clients += 1;
             eprintln!("pokshell: accepted Wayland client connection total={}", self.accepted_clients);
         }
-        self.display.dispatch_clients(&mut self.state)?;
+        let count = self.display.dispatch_clients(&mut self.state)?;
+        self.dispatched_requests = self.dispatched_requests.saturating_add(count as u64);
         if self.disconnected.swap(false, std::sync::atomic::Ordering::AcqRel) {
             self.state.dirty = true;
         }

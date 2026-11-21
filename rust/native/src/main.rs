@@ -390,14 +390,14 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
                 if !pump.has_submitted() && !server.game_has_content(&mut renderer) {
                     if Instant::now() >= next_startup_report {
                         let (xdg, layers, imports) = server.client_counts();
-                        eprintln!("poknative: waiting_for_game_surface accepted_clients={} xdg_toplevels={xdg} layer_surfaces={layers} pending_dmabufs={imports}",
-                            server.accepted_clients());
+                        eprintln!("poknative: waiting_for_game_surface accepted_clients={} dispatched_requests={} xdg_toplevels={xdg} layer_surfaces={layers} pending_dmabufs={imports}",
+                            server.accepted_clients(), server.dispatched_requests());
                         next_startup_report = Instant::now() + Duration::from_secs(3);
                     }
                     if Instant::now() >= startup_deadline {
                         let (xdg, layers, imports) = server.client_counts();
-                        eprintln!("poknative: first_frame_timeout accepted_clients={} xdg_toplevels={xdg} layer_surfaces={layers} pending_dmabufs={imports}",
-                            server.accepted_clients());
+                        eprintln!("poknative: first_frame_timeout accepted_clients={} dispatched_requests={} xdg_toplevels={xdg} layer_surfaces={layers} pending_dmabufs={imports}",
+                            server.accepted_clients(), server.dispatched_requests());
                         return Err("no renderable game surface after 30s; leaving the TTY visible".into());
                     }
                     seat_events.dispatch(Duration::from_millis(50), &mut state)?;
