@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! One-command nested graphical session supervisor for regular KDE Wayland users.
-//! Keeps the host compositor independent, pins game + UI to pokcomp, and owns
-//! only child processes started by this session (never a foreign KDE process).
+//! One-command nested or **native TTY** graphical session supervisor.
+//! Pins the game and the system UI to one Smithay Wayland server, never
+//! touching an unrelated KDE compositor or another session's processes.
 use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::fs::FileTypeExt;
+use std::os::unix::process::CommandExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -43,6 +44,8 @@ struct Options {
     layer: Option<PathBuf>,
     ipc_socket: Option<PathBuf>,
     no_autostart: bool,
+    native: bool,
+    card: Option<PathBuf>,
 }
 
 fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, String> {
@@ -62,12 +65,18 @@ fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Opti
             Some("--socket") if opts.ipc_socket.is_none() =>
                 opts.ipc_socket = Some(PathBuf::from(args.next().ok_or("--socket requires a path")?)),
             Some("--no-autostart") if !opts.no_autostart => opts.no_autostart = true,
+            Some("--native") if !opts.native => opts.native = true,
+            Some("--card") if opts.card.is_none() =>
+                opts.card = Some(PathBuf::from(args.next().ok_or("--card requires /dev/dri/cardN")?)),
             Some("--help") | Some("-h") => return Ok(None),
             _ => return Err(format!("unknown/duplicate argument: {}", arg.to_string_lossy())),
         }
     }
     if opts.game.is_none() {
         return Err("--game PATH is required (e.g. /usr/games/supertux)".into());
+    }
+    if opts.card.is_some() && !opts.native {
+        return Err("--card can only be used with --native".into());
     }
     Ok(Some(opts))
 }
@@ -78,7 +87,7 @@ fn validate_display(name: &str) -> io::Result<()> {
         || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
     {
         return Err(io::Error::new(io::ErrorKind::InvalidData,
-            "pokcomp did not provide a safe nested pokshell-* display name"));
+            "compositor did not provide a safe pokshell-* display name"));
     }
     Ok(())
 }
@@ -114,7 +123,7 @@ fn wait_socket(path: &Path, child: &mut Child, label: &str) -> io::Result<()> {
 }
 
 fn wait_display(child: &mut Child) -> io::Result<String> {
-    let pipe = child.stdout.take().ok_or_else(|| io::Error::other("pokcomp stdout pipe missing"))?;
+    let pipe = child.stdout.take().ok_or_else(|| io::Error::other("compositor stdout pipe missing"))?;
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         for line in BufReader::new(pipe).lines() {
@@ -136,14 +145,14 @@ fn wait_display(child: &mut Child) -> io::Result<String> {
             return Err(io::Error::new(io::ErrorKind::Interrupted, "session interrupted"));
         }
         if let Some(status) = child.try_wait()? {
-            return Err(io::Error::other(format!("pokcomp exited before announcing display: {status}")));
+            return Err(io::Error::other(format!("compositor exited before announcing display: {status}")));
         }
         if let Ok(display) = rx.recv_timeout(Duration::from_millis(100)) {
             validate_display(&display)?;
             return Ok(display);
         }
     }
-    Err(io::Error::new(io::ErrorKind::TimedOut, "pokcomp did not announce its display"))
+    Err(io::Error::new(io::ErrorKind::TimedOut, "compositor did not announce its display"))
 }
 
 /// Use TERM first so pokcomp's socket cleanup and layer exit paths run.
@@ -165,27 +174,49 @@ fn stop_child(child: &mut Child, label: &str) {
     let _ = child.wait();
 }
 
-fn paths() -> io::Result<(PathBuf, PathBuf, PathBuf)> {
+fn paths(native: bool) -> io::Result<(PathBuf, PathBuf, PathBuf)> {
     let exe = env::current_exe()?.canonicalize()?;
     let bin = exe.parent().ok_or_else(|| io::Error::other("binary directory unavailable"))?;
     let rust = bin.parent().and_then(Path::parent)
         .ok_or_else(|| io::Error::other("rust workspace not found relative to binary"))?;
     let root = rust.parent().ok_or_else(|| io::Error::other("repository root unavailable"))?;
     Ok((
-        root.join("rust/compositor/target/debug/pokcomp"),
+        root.join(if native { "rust/native/target/debug/poknative" }
+                  else { "rust/compositor/target/debug/pokcomp" }),
         bin.join("pokshelld"),
         root.join("graphics/wayland-layer/target/debug/pokshell-layer"),
     ))
 }
 
+/// The native backend can only be started from an authorized, non-root TTY.
+fn validate_host_session(native: bool) -> io::Result<()> {
+    if native {
+        if env::var_os("WAYLAND_DISPLAY").is_some()
+            || env::var_os("DISPLAY").is_some()
+            || matches!(env::var("XDG_SESSION_TYPE").as_deref(), Ok("wayland" | "x11"))
+        {
+            return Err(io::Error::other(
+                "--native requires a separate Linux TTY, not a KDE/Wayland desktop session"));
+        }
+        unsafe extern "C" { fn geteuid() -> u32; }
+        // SAFETY: read-only libc effective UID query.
+        if unsafe { geteuid() } == 0 {
+            return Err(io::Error::other("--native must run as a non-root seat user"));
+        }
+    } else if env::var_os("WAYLAND_DISPLAY").is_none() {
+        return Err(io::Error::other(
+            "nested mode requires a host Wayland session; use --native from a TTY"));
+    }
+    Ok(())
+}
+
 fn session(opts: Options) -> io::Result<()> {
+    validate_host_session(opts.native)?;
+
     let runtime = env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from).ok_or_else(|| io::Error::other("XDG_RUNTIME_DIR is required"))?;
     if !runtime.is_absolute() || !runtime.is_dir() {
         return Err(io::Error::other("XDG_RUNTIME_DIR must be an existing absolute directory"));
-    }
-    if env::var_os("WAYLAND_DISPLAY").is_none() {
-        return Err(io::Error::other("launch from a regular user's KDE Wayland Konsole"));
     }
     let ipc = opts.ipc_socket.unwrap_or_else(|| runtime.join("pokshell.sock"));
     if !ipc.is_absolute() {
@@ -195,15 +226,23 @@ fn session(opts: Options) -> io::Result<()> {
         return Err(io::Error::new(io::ErrorKind::AlreadyExists,
             format!("IPC socket {} already exists; refusing to replace a running daemon", ipc.display())));
     }
-    let (default_comp, default_daemon, default_layer) = paths()?;
+    let (default_comp, default_daemon, default_layer) = paths(opts.native)?;
     let comp_path = opts.compositor.unwrap_or(default_comp);
     let daemon_path = opts.daemon.unwrap_or(default_daemon);
     let layer_path = opts.layer.unwrap_or(default_layer);
     let game = opts.game.expect("validated game path");
 
-    // pokcomp is a *nested* host window, not a DRM/KMS/seat owner.
-    let mut compositor = Command::new(&comp_path)
-        .env_remove("WAYLAND_SOCKET")
+    // The nested backend is a Winit host window. The native backend is
+    // explicitly --wayland and acquires libseat/DRM on an authorized TTY.
+    // Place owned children outside the terminal foreground process group:
+    // Ctrl+C reaches the supervisor, which cleans them up in order.
+    let mut command = Command::new(&comp_path);
+    if opts.native {
+        command.arg("--wayland");
+        if let Some(card) = &opts.card { command.arg("--card").arg(card); }
+    }
+    let mut compositor = command.env_remove("WAYLAND_SOCKET")
+        .process_group(0)
         .stdout(Stdio::piped())
         .spawn()?;
     let mut daemon: Option<Child> = None;
@@ -211,7 +250,7 @@ fn session(opts: Options) -> io::Result<()> {
     let result = (|| -> io::Result<()> {
         let display = wait_display(&mut compositor)?;
         let graphical_socket = runtime.join(&display);
-        wait_socket(&graphical_socket, &mut compositor, "pokcomp")?;
+        wait_socket(&graphical_socket, &mut compositor, "Smithay compositor")?;
 
         let mut process = Command::new(&daemon_path);
         process.arg("--socket").arg(&ipc)
@@ -220,7 +259,9 @@ fn session(opts: Options) -> io::Result<()> {
         for arg in opts.game_args {
             process.arg("--game-arg").arg(arg);
         }
-        // A launched game is pinned to the nested display by pokshelld.
+        // Always pin the actual game to the same native/nested Smithay
+        // display, irrespective of inherited KDE/Wayland/X11 variables.
+        process.process_group(0);
         daemon = Some(process.spawn()?);
         wait_socket(&ipc, daemon.as_mut().expect("spawned"), "pokshelld")?;
 
@@ -230,6 +271,7 @@ fn session(opts: Options) -> io::Result<()> {
             .arg("--menu").arg("--display").arg(&display)
             .arg("--socket").arg(&ipc)
             .env_remove("WAYLAND_SOCKET")
+            .process_group(0)
             .spawn()?);
         // Let the client establish its first layer-shell configure, and
         // reject immediately-crashing clients before starting a game.
@@ -245,15 +287,15 @@ fn session(opts: Options) -> io::Result<()> {
                 return Err(io::Error::other(format!("GAME START rejected: {}", response.trim())));
             }
         }
-        println!("POKSESSION_READY display={display} ipc={} game={}",
+        println!("POKSESSION_READY backend={} display={display} ipc={} game={}",
+            if opts.native { "native" } else { "nested" },
             ipc.display(), game.display());
-        println!("Use rust/target/debug/pokctl OVERLAY OPEN to show the menu; Ctrl+C exits the whole nested session.");
+        println!("Use rust/target/debug/pokctl OVERLAY OPEN to show the menu; Ctrl+C stops owned services.");
 
         loop {
             if SHUTDOWN.load(Ordering::Acquire) { break; }
             if let Some(status) = compositor.try_wait()? {
-                eprintln!("pokshell-session: compositor exited: {status}");
-                break;
+                return Err(io::Error::other(format!("compositor exited unexpectedly: {status}")));
             }
             if let Some(client) = layer.as_mut() {
                 if let Some(status) = client.try_wait()? {
@@ -286,7 +328,7 @@ fn main() {
     let opts = match parse_options(env::args_os().skip(1)) {
         Ok(Some(opts)) => opts,
         Ok(None) => {
-            println!("poksession --game EXECUTABLE [--game-arg ARG] [--no-autostart] [--socket IPC_PATH] [--compositor PATH] [--daemon PATH] [--layer PATH]\nStarts one nested Smithay + pokshelld + system menu session. Ctrl+C terminates owned children.");
+            println!("poksession [--native [--card /dev/dri/card0]] --game EXECUTABLE [--game-arg ARG] [--no-autostart] [--socket IPC_PATH] [--compositor PATH] [--daemon PATH] [--layer PATH]\\nNested mode: KDE/Wayland host; native mode: active non-root TTY, no KDE. Both own Smithay, pokshelld, and system menu. Ctrl+C stops owned children.");
             return;
         }
         Err(err) => { eprintln!("poksession: {err}"); std::process::exit(2); }
@@ -308,11 +350,18 @@ mod tests {
         assert!(opts(&[]).is_err());
         assert!(opts(&["--game"]).is_err());
         assert!(opts(&["--game", "/usr/games/supertux", "--game", "another"]).is_err());
+        assert!(opts(&["--game", "/usr/games/supertux", "--card", "/dev/dri/card0"]).is_err());
+        assert!(opts(&["--game", "/usr/games/supertux", "--native", "--native"]).is_err());
+        assert!(opts(&["--game", "/usr/games/supertux", "--native", "--card"]).is_err());
         let p = opts(&["--game", "/usr/games/supertux", "--game-arg", "--fullscreen",
             "--no-autostart"]).unwrap().unwrap();
         assert_eq!(p.game.unwrap(), PathBuf::from("/usr/games/supertux"));
         assert_eq!(p.game_args, [OsString::from("--fullscreen")]);
         assert!(p.no_autostart);
+        let native = opts(&["--native", "--card", "/dev/dri/card0",
+            "--game", "/usr/games/supertux"]).unwrap().unwrap();
+        assert!(native.native);
+        assert_eq!(native.card, Some(PathBuf::from("/dev/dri/card0")));
     }
     #[test]
     fn nested_server_name_rejects_host_display_and_paths() {
