@@ -11,6 +11,7 @@ use smithay::{
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         udev::{UdevBackend, UdevEvent},
         drm::{DrmDevice, DrmDeviceFd},
+        egl::{EGLDevice, EGLDisplay},
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
     },
     reexports::{
@@ -199,10 +200,21 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
     if resources.crtcs().is_empty() || modes == 0 {
         return Err("no KMS CRTC/display modes; cannot start a native output".into());
     }
-    let _gbm = GbmDevice::new(drm_fd)?;
+    let gbm = GbmDevice::new(drm_fd)?;
     println!("gbm_initialized=yes");
+    // Smithay's GBM/Native EGL path is also used by its DRM compositor.
+    // Native EGL setup is *not* a modeset or a rendered Wayland frame.
+    let egl_display = unsafe { EGLDisplay::new(gbm.clone())? };
+    match EGLDevice::device_for_display(&egl_display) {
+        Ok(egl_device) => {
+            println!("egl_device_software={}", egl_device.is_software());
+            println!("egl_render_node={:?}", egl_device.try_get_render_node());
+        }
+        Err(err) => println!("egl_device_metadata_unavailable={err}"),
+    }
+    println!("egl_display_initialized=yes");
     println!("input_backend=libinput drm_hotplug=udev seat_events=libseat");
-    println!("next_gate=EGL renderer + per-CRTC DrmOutputManager + vblank event loop (not yet wired)");
+    println!("next_gate=GLES renderer + per-CRTC DrmOutputManager + vblank event loop (not yet wired)");
 
     if let Some(seconds) = opts.monitor_seconds {
         install_signals()?;

@@ -10,5 +10,5 @@ description = "Native Linux libseat DRM/GBM session bring-up for pokshell"
 
 [dependencies]
 smithay = { version = "=0.7.0", default-features = false, features = [
-    "backend_drm", "backend_gbm", "backend_session_libseat", "backend_udev", "backend_libinput",
+    "backend_drm", "backend_gbm", "backend_session_libseat", "backend_udev", "backend_libinput", "backend_egl", "renderer_gl",
 ] }

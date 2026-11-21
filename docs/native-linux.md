@@ -13,7 +13,7 @@ backend. The C framebuffer prototype is not the target graphics stack.
   Safe to run from regular KDE Wayland Konsole; never requests DRM master.
 - `rust/native` (`poknative`): **separate Smithay backend bring-up** using
   libseat for a seat-owned DRM file descriptor, kernel KMS resource enumeration,
-  and GBM device initialization, udev DRM hotplug monitoring, libinput device-event
+  and GBM + EGL display initialization, udev DRM hotplug monitoring, libinput device-event
 collection and libseat suspend/resume handling. **No DRM modeset, buffers or Wayland compositor
   are attached yet**. It refuses to run inside KDE by default. It is intended
   for a separate native Linux TTY, not a nested KDE window.
@@ -50,7 +50,7 @@ cargo build --manifest-path rust/native/Cargo.toml
 
 Expected diagnostic milestones are `POKNATIVE seat=...`,
 `kms_crtcs=...`, at least one connector with modes,
-and `gbm_initialized=yes`.
+and `gbm_initialized=yes` / `egl_display_initialized=yes`.
 
 Do not launch `poknative` with sudo or from KDE's graphical session.
 The output does **not** claim native fullscreen Wayland gaming,
