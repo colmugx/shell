@@ -1,0 +1,14 @@
+[package]
+name = "poknative"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+rust-version = "1.82"
+description = "Native Linux libseat DRM/GBM session bring-up for pokshell"
+
+[workspace]
+
+[dependencies]
+smithay = { version = "=0.7.0", default-features = false, features = [
+    "backend_drm", "backend_gbm", "backend_session_libseat",
+] }
