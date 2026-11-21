@@ -177,7 +177,9 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
                 // Hardware emergency exit even while the game owns keyboard
                 // focus and Ctrl+C no longer reaches the terminal.
                 use smithay::backend::input::{KeyboardKeyEvent, KeyState};
-                if state.escape.key(event.key_code().raw(), event.state() == KeyState::Pressed) {
+                if // Smithay/libinput supplies xkb keycodes (evdev key + 8).
+                // Our emergency chord is specified using Linux evdev codes.
+                state.escape.key(event.key_code().raw().saturating_sub(8), event.state() == KeyState::Pressed) {
                     eprintln!("poknative: Ctrl+Alt+Backspace emergency session shutdown");
                     SHUTDOWN.store(true, Ordering::Release);
                 } else if state.gate.may_submit() {
