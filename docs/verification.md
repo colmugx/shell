@@ -10,7 +10,7 @@ Evidence is tracked per implementation, per machine and per hardware reference.
 | UTM read-only KMS preflight | User screenshot 2026-11-21: virtio-pci card0, Virtual-1 connected, 1 CRTC/connector/encoder, kms_readable=yes and native_kms_candidate=yes | Preflight accepted; separately, native KMS scanout/page-flip now user-observed (see next row) |
 | Bootable Buildroot QEMU image | No QEMU boot log | Unverified |
 | UTM native DRM/KMS scanout (P1-N04 diagnostic) | User screenshot 2026-11-21: green screen at 1280×800 (120 Hz); terminal confirms libseat seat0, GBM/EGL/GLES initialized, KMS page-flip acknowledgments frame 0 and 1, and kms_scanout_test=complete on /dev/dri/card0 | Native VM scanout accepted; blue duration was too short to see; new two-color hold needs retest. Not proof of native Wayland game or hardware GPU acceleration |
-| Own DRM/KMS and Wayland compositor | Smithay Winit nested compositor passed automated XDG/Layer Shell tests and user-reported UTM display acceptance. Native Linux pokdrm kernel DRM ioctl probe and separate Smithay libseat/DRM/GBM device bring-up source added; opt-in GBM/GLES atomic scanout diagnostic implemented; native Wayland presentation pending; native diagnostic scanout accepted on UTM VirtIO VM | Nested graphics accepted; native Linux seat/DRM/GBM/EGL/udev/libinput compiled on ARM64/x86-64 CI; VM/UTM native KMS runtime observed; physical handheld and native XDG game runtime pending |
+| Own DRM/KMS and Wayland compositor | Smithay Winit nested compositor passed automated XDG/Layer Shell tests and user-reported UTM display acceptance. Native Linux pokdrm kernel DRM ioctl probe and separate Smithay libseat/DRM/GBM device bring-up source added; opt-in GBM/GLES atomic scanout diagnostic implemented; native XDG/SHM Wayland presentation observed on UTM; native diagnostic scanout accepted on UTM VirtIO VM | Nested graphics accepted; native Linux seat/DRM/GBM/EGL/udev/libinput compiled on ARM64/x86-64 CI; VM/UTM native XDG/SHM scanout observed; native SuperTux/OpenGL and physical handheld unverified |
 | Wayland layer-shell diagnostic surface | Rust wl_shm + zwlr_layer_shell_v1 client; Actions 44704676668, x86-64 headless Sway protocol test | Compiled on x86-64 / ARM64; headless protocol handshake passed |
 | UTM Wayland graphical session | User-reported acceptance on 2026-11-21: SuperTux is rendered within the nested Smithay host window; QUIT ends the game/session daemon while the separate Smithay host window remains open | Manual UTM acceptance passed for window ownership and process separation only |
 | Actual game overlay during arbitrary fullscreen SDL/GLES game | Headless CI verifies XDG/Layer SHM coexistence and unchanged PID. Earlier UTM capture (2026-11-20) showed SuperTux escaping to KDE; following explicit game Wayland socket pinning, user reports SuperTux now inside the Smithay window (2026-11-21). Fullscreen negotiation previously unverified; nested XDG maximize/fullscreen configure and output-resize behavior now implemented with an SDL2 CI regression. the user subsequently reported working fullscreen/resize, Escape-close and game keyboard focus recovery in UTM. GLES acceleration remains unmeasured | User-reported UTM acceptance (2026-11-21) now includes SuperTux and graphical system menu together inside Smithay after explicit --display pinning; visual coexistence/navigation and menu actions accepted. Physical GPU acceleration and DRM/KMS native output unverified |
@@ -27,7 +27,7 @@ Current Rust daemon uses a user-owned local Unix socket (0600), fixed configured
 The historical C framebuffer program is not suitable as a production display manager.
 
 P1-N05: shared XDG/layer-shell core reused by nested and native binaries;
-actual native Wayland rendering and physical input remain unverified.
+native XDG/SHM scanout observed in UTM; SuperTux/OpenGL and physical input remain unverified.
 
 P1-N05 energy policy: common XDG/layer compositor now skips unmodified
 nested redraw; native `FramePump` retains at most one in-flight scanout
@@ -35,7 +35,7 @@ and waits for an acknowledged vblank before reusing buffers.
 Proof: deterministic unit tests and x86-64/ARM64 CI pending; idle
 power, GPU clocks and frame latency not measured.
 
-### P1-N05 XDG/SHM canary (source-only; CI and user TTY pending)
+### P1-N05 XDG/SHM canary (x86-64/ARM64 CI passed; UTM manual accepted)
 
 pokxdg-smoke is a Wayland XDG-Shell + wl_shm test game. It does not link
 to SDL, EGL, OpenGL or GLX. It performs bufferless XDG configure/ack and
@@ -56,4 +56,42 @@ Exit with Ctrl+Alt+Backspace. The expected trace includes connected,
 new xdg_toplevel, xdg_configured, xdg_shm_buffer_committed,
 native_kms_first_frame_queued=yes, and frame_callback_done.
 Success isolates a SuperTux/SDL/EGL-specific problem; failure isolates
-the native Wayland XDG/SHM/KMS path. Neither is accepted without TTY logs.
+the native Wayland XDG/SHM/KMS path. 2026-11-21 UTM screenshots and console log confirmed 1280x800 XDG SHM checkerboard, layer/game GLES elements, KMS first frame, vblank=1, frame callback and submitted=1 presented=1. Later BrokenPipe followed Ctrl+Alt+Backspace shutdown. This does not prove SuperTux/OpenGL or DMA-BUF import. CI: https://github.com/colmugx/shell/actions/runs/44917016644 .
+
+### P1-N05 SDL2 SHM-vs-OpenGL diagnostic (source change; CI and UTM pending)
+
+The existing SDL2 Wayland smoke client has an opt-in "--opengl" mode.
+The default mode stays SDL_GetWindowSurface -> wl_shm. Both modes print
+staged diagnostics. The GL mode requests a desktop OpenGL context through
+SDL2, clears a blue frame and calls SDL_GL_SwapWindow. This probes
+native Wayland EGL and buffer import without modifying the game.
+
+After building the native and Rust workspace binaries, run these
+separately on an authorized non-root TTY without KDE:
+
+    ./rust/target/debug/poksession --native --card /dev/dri/card0 \
+      --game /usr/bin/python3 \
+      --game-arg "$PWD/rust/compositor/tests/sdl2_client.py" \
+      > "$HOME/pokshell-sdl-shm.log" 2>&1
+
+    ./rust/target/debug/poksession --native --card /dev/dri/card0 \
+      --game /usr/bin/python3 \
+      --game-arg "$PWD/rust/compositor/tests/sdl2_client.py" --game-arg --opengl \
+      > "$HOME/pokshell-sdl-gl.log" 2>&1
+
+Then test the actual game with its documented renderer selector:
+
+    ./rust/target/debug/poksession --native --card /dev/dri/card0 \
+      --game /usr/games/supertux2 \
+      --game-arg --renderer --game-arg sdl \
+      > "$HOME/pokshell-supertux-sdl.log" 2>&1
+
+Use Ctrl+Alt+Backspace to exit each run if necessary. Examine markers
+pokshell-sdl: xdg_window_created, shm_surface_submitted,
+gl_context_ready, gl_swap_submitted; compositor new xdg_toplevel,
+native_kms_first_frame_queued, frame_callback_done, and any SDL/EGL
+errors. SuperTux's SDL renderer is not assumed to use wl_shm.
+
+If SDL2/SHM passes but GL fails: inspect EGL/DMABUF buffer exchange.
+If SDL2/GL passes but SuperTux fails: inspect game GL requirements.
+If SDL2/SHM fails but raw XDG/SHM passed: inspect SDL's Wayland flow.
