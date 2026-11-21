@@ -175,3 +175,38 @@ A separate TTY or SSH connection can issue pokctl commands. This is an
 **experimental runtime acceptance**: do not mark native game/Overlay
 presentation or libinput focus as passed until tested with UTM screenshots
 and logs. CI verifies the process/socket lifecycle without access to DRM.
+
+## P1-N05 black-screen incident: fail-closed native game startup
+
+On 2026-11-21 the user reported that `poksession --native` displayed a
+black screen and input appeared unresponsive, despite passing the previous
+two-color native KMS test. **Do not claim P1-N05 accepted.** We do not
+yet have compositor or SuperTux stderr from the failed run, so the exact
+root cause is not confirmed.
+
+The native backend now waits for an **actually drawable XDG game buffer**
+before its first KMS framebuffer commit (instead of submitting the empty
+dark background). If no game buffer arrives in 30 seconds it exits with
+`no renderable game surface after 30s`, leaving the TTY unmodified by
+this native compositor's scanout path. A hardware **Ctrl+Alt+Backspace**
+(evdev) emergency shortcut sets the native shutdown flag independent
+of game keyboard focus. CI covers the key-state policy and backend
+build; real hardware/UTM input capture requires separate acceptance.
+
+Before any further native test, recover access and start with a fresh
+ordinary-user TTY, with KDE stopped. Capture logs for diagnosis, then
+run *one* bounded attempt:
+
+```sh
+cd ~/workspace/shell
+./rust/target/debug/poksession --native --card /dev/dri/card0 \
+  --game /usr/games/supertux > "$HOME/pokshell-native.log" 2>&1
+```
+
+Use Ctrl+Alt+Backspace to leave a black-screen session. If it cannot be
+delivered to the VM, use SSH or another TTY to terminate `poksession`
+and subsequently start the display manager. A compositor that has
+already performed modeset is **not** guaranteed to restore the previous
+VT scanout without manual verification; do not repeat a black-screen
+run without collecting its log first. No root compositor, no KDE
+takeover, and do not treat CI headless output as hardware acceptance.
