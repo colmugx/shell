@@ -11,7 +11,7 @@ pub struct Candidate {
     pub mode: usize,
     pub width: u16,
     pub height: u16,
-    pub refresh_millihz: u32,
+    pub refresh_hz: u32,
     pub currently_routed: bool,
 }
 
@@ -35,7 +35,7 @@ pub fn choose(candidates: &[Candidate], connected_with_modes: bool) -> Result<us
     Ok(candidates.iter().enumerate().max_by_key(|(_, c)| (
         u8::from(c.currently_routed),
         u32::from(c.width) * u32::from(c.height),
-        c.refresh_millihz,
+        c.refresh_hz,
         usize::MAX - c.connector,
         usize::MAX - c.encoder,
         usize::MAX - c.crtc,
@@ -49,7 +49,7 @@ mod tests {
     fn c(connector: usize, encoder: usize, crtc: usize, width: u16, height: u16,
          current: bool) -> Candidate {
         Candidate { connector, encoder, crtc, mode: 0, width, height,
-            refresh_millihz: 60_000, currently_routed: current }
+            refresh_hz: 60, currently_routed: current }
     }
 
     #[test]
@@ -70,7 +70,7 @@ mod tests {
         let mut list = vec![c(0, 0, 0, 1280, 720, false),
             c(1, 1, 1, 1920, 1080, false),
             c(1, 1, 1, 1920, 1080, false)];
-        list[2].refresh_millihz = 120_000;
+        list[2].refresh_hz = 120;
         assert_eq!(choose(&list, true), Ok(2));
     }
     #[test]

@@ -221,7 +221,7 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
                         connector: conn_idx, encoder: encoder_idx,
                         crtc: crtc_idx, mode: mode_idx,
                         width, height,
-                        refresh_millihz: mode.vrefresh(),
+                        refresh_hz: mode.vrefresh(),
                         currently_routed: enc.crtc() == Some(*crtc),
                     });
                 }
@@ -235,7 +235,7 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
     let encoder = resources.encoders()[route.encoder];
     let crtc = resources.crtcs()[route.crtc];
     let mode = drm.get_connector(connector, false)?.modes()[route.mode];
-    println!("kms_candidates={} kms_route connector={connector:?} encoder={encoder:?} crtc={crtc:?} mode={:?} refresh_millihz={}",
+    println!("kms_candidates={} kms_route connector={connector:?} encoder={encoder:?} crtc={crtc:?} mode={:?} refresh_hz={}",
         routes.len(), mode.size(), mode.vrefresh());
     let gbm = GbmDevice::new(drm_fd)?;
     println!("gbm_initialized=yes");
