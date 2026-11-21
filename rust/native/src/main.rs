@@ -8,9 +8,10 @@ use smithay::{
     backend::{
         allocator::gbm::GbmDevice,
         drm::{DrmDevice, DrmDeviceFd},
-        session::{libseat::LibSeatSession, Session},
+        session::{libseat::LibSeatSession, Event as SessionEvent, Session},
     },
     reexports::{
+        calloop::EventLoop,
         drm::control::Device as DrmControlDevice,
         rustix::fs::OFlags,
     },
@@ -22,11 +23,11 @@ use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Options {
     card: Option<PathBuf>,
-    allow_graphical_session: bool,
 }
 
 fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, String> {
@@ -36,8 +37,6 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, St
         match arg.to_str() {
             Some("--card") if opts.card.is_none() =>
                 opts.card = Some(PathBuf::from(args.next().ok_or("--card requires a device")?)),
-            Some("--allow-graphical-session") if !opts.allow_graphical_session =>
-                opts.allow_graphical_session = true,
             Some("--help") | Some("-h") => return Ok(None),
             _ => return Err(format!("unknown/duplicate argument: {}", arg.to_string_lossy())),
         }
@@ -62,19 +61,25 @@ fn validate_card(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn check_session(allow: bool) -> Result<(), String> {
+fn check_session() -> Result<(), String> {
     // Most importantly, never take control of KWin's DRM card during
     // an existing graphical desktop test, even if it appears accessible.
-    if !allow && (env::var_os("WAYLAND_DISPLAY").is_some()
-        || env::var_os("DISPLAY").is_some())
+    if env::var_os("WAYLAND_DISPLAY").is_some()
+        || env::var_os("DISPLAY").is_some()
+        || matches!(env::var("XDG_SESSION_TYPE").as_deref(), Ok("wayland" | "x11"))
     {
         return Err("native DRM requires a separate Linux TTY/seat: close graphical session variables, do not run inside KDE; use pokdrm for read-only inspection".into());
+    }
+    unsafe extern "C" { fn geteuid() -> u32; }
+    // SAFETY: read-only Linux libc get effective UID.
+    if unsafe { geteuid() } == 0 {
+        return Err("native DRM must run as an authorized non-root seat user, never sudo".into());
     }
     Ok(())
 }
 
 fn run(opts: Options) -> Result<(), Box<dyn Error>> {
-    check_session(opts.allow_graphical_session)?;
+    check_session()?;
     let card = opts.card.unwrap_or_else(|| PathBuf::from("/dev/dri/card0"));
     validate_card(&card)?;
     let meta = fs::symlink_metadata(&card)?;
@@ -84,9 +89,29 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
 
     // libseat negotiates device access via seatd/logind; never sudo or
     // attempt to take DRM master by opening /dev/dri manually.
-    let (mut session, _notifier) = LibSeatSession::new()?;
+    let (mut session, notifier) = LibSeatSession::new()?;
+    // Process libseat activation events. KMS devices must never be
+    // accessed before the active seat grant is delivered.
+    let mut seat_events: EventLoop<bool> = EventLoop::try_new()?;
+    seat_events.handle().insert_source(notifier, |event, _, active| {
+        match event {
+            SessionEvent::ActivateSession => {
+                *active = true;
+                eprintln!("poknative: libseat active");
+            }
+            SessionEvent::PauseSession => {
+                *active = false;
+                eprintln!("poknative: libseat suspended");
+            }
+        }
+    })?;
+    let mut active = session.is_active();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !session.is_active() && Instant::now() < deadline {
+        seat_events.dispatch(Duration::from_millis(100), &mut active)?;
+    }
     if !session.is_active() {
-        return Err("libseat session is not active".into());
+        return Err("libseat did not activate the session within 5 seconds".into());
     }
     println!("POKNATIVE seat={} card={}", session.seat(), card.display());
 
@@ -160,7 +185,7 @@ mod tests {
         // Deterministic function contracts without changing CI env.
         // The graphical session guard is intentionally checked before
         // libseat initialization; tests verify path validation separately.
-        let r = check_session(true);
-        assert!(r.is_ok());
+        assert!(parse([OsString::from("--allow-graphical-session")]).is_err());
+        // Seat access is intentionally not attempted by any unit test.
     }
 }
