@@ -6,7 +6,7 @@ mod menu;
 use menu::{MenuAction, MenuState};
 use std::env;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -249,7 +249,7 @@ fn run_menu_commands(socket: &std::path::Path, action: MenuAction) -> Result<(),
         stream.set_write_timeout(Some(Duration::from_secs(4))).map_err(|e| e.to_string())?;
         stream.set_read_timeout(Some(Duration::from_secs(8))).map_err(|e| e.to_string())?;
         stream.write_all(request.as_bytes()).map_err(|e| e.to_string())?;
-        stream.write_all(b"\\n").map_err(|e| e.to_string())?;
+        stream.write_all(b"\n").map_err(|e| e.to_string())?;
         let mut line = String::new();
         BufReader::new(stream.take(1024)).read_line(&mut line).map_err(|e| e.to_string())?;
         if !line.starts_with("OK ") {

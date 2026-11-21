@@ -234,6 +234,20 @@ impl CompositorHandler for PokCompositor {
                     .current().keyboard_interactivity
                     != smithay::wayland::shell::wlr_layer::KeyboardInteractivity::None
             });
+            if wants_keyboard
+                && smithay::wayland::compositor::with_states(surface, |states| {
+                    states.cached_state.get::<smithay::wayland::shell::wlr_layer::LayerSurfaceCachedState>()
+                        .current().keyboard_interactivity
+                        == smithay::wayland::shell::wlr_layer::KeyboardInteractivity::Exclusive
+                })
+            {
+                if let Some(keyboard) = self.seat.get_keyboard() {
+                    if keyboard.current_focus().as_ref() != Some(surface) {
+                        keyboard.set_focus(self, Some(surface.clone()), SERIAL_COUNTER.next_serial());
+                        eprintln!("pokcomp: exclusive system menu keyboard focus");
+                    }
+                }
+            }
             if !wants_keyboard {
                 if let Some(keyboard) = self.seat.get_keyboard() {
                     if keyboard.current_focus().as_ref() == Some(surface) {
