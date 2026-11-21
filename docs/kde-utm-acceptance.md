@@ -263,8 +263,14 @@ Manual UTM gate:
 5. Reopen; select STOP GAME. Verify `mode=home`, game stopped and the
    compositor remains open.
 
-**Not yet accepted:** the new graphical system menu in UTM, physical gamepad
-navigation, gamepad input exclusivity, multi-display and native DRM/KMS.
+**Accepted on UTM (user screenshot, 2026-11-21):** SuperTux and the
+text-bearing POKSHELL system menu are visible inside the **same Smithay
+window**, not as separate KDE surfaces. User reports all menu operations
+and keyboard navigation work. No claim is made about physical joystick
+operation, GPU acceleration, multi-display or native DRM/KMS.
+
+**Not yet accepted:** physical joystick navigation, exclusive gamepad input,
+multi-display, GPU/GBM/EGL performance and native DRM/KMS modesetting.
 Optional joystick event decoding exists but hardware input is not verified.
 
 ## Optional Linux joystick navigation

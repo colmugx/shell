@@ -65,11 +65,12 @@ and overlay visibility changes without terminating the game. An experimental
 pointer routing now honors surface input regions. Game launch with
 `pokshelld --game-wayland-display pokshell-N` explicitly targets the
 nested compositor's socket and disables KDE/X11 fallback (see
-[UTM acceptance](docs/kde-utm-acceptance.md)). **The nested UTM game display and diagnostic overlay input have been
-user-accepted; the new graphical game menu's **compositor placement** still needs UTM re-acceptance:
-use `pokshell-layer --menu --display pokshell-N` to prevent it from
-accidentally attaching to the KDE host.
-No native DRM/KMS, exclusive gamepad focus or handheld graphics is claimed.** See the
+[UTM acceptance](docs/kde-utm-acceptance.md)). **The user has accepted the nested SuperTux game and the graphical
+POKSHELL menu in the same Smithay window**, including keyboard navigation
+and Resume/Restart/Stop actions (2026-11-21 UTM screenshot). The menu is
+pinned to the nested server using `--display pokshell-N`. This does not
+prove native DRM/KMS, exclusive physical gamepad focus, or hardware GLES
+acceleration. See the
 [compositor build and manual test guide](docs/compositor.md).
 
 ## Native Linux graphics work
