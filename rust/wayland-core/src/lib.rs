@@ -595,6 +595,16 @@ impl Server {
         total
     }
 
+    /// Do not modeset an empty initial output until a game has presented a
+    /// drawable surface. This avoids replacing the Linux TTY with black.
+    pub fn game_has_content(&mut self, renderer: &mut GlesRenderer) -> bool {
+        self.state.xdg_shell_state.toplevel_surfaces().iter().any(|surface| {
+            !render_elements_from_surface_tree(
+                renderer, surface.wl_surface(), (0, 0), 1.0, 1.0, Kind::Unspecified,
+            ).is_empty()
+        })
+    }
+
     pub fn socket_name(&self) -> String {
         self.listener.socket_name().expect("named listener").to_string_lossy().into_owned()
     }

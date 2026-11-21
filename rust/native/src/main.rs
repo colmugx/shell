@@ -9,6 +9,7 @@ mod seat;
 mod output;
 mod frame;
 mod scanout_demo;
+mod escape;
 
 use kms::Candidate;
 use smithay::{
@@ -63,6 +64,7 @@ struct MonitorState {
     vblanks: usize,
     drm_error: bool,
     server: Option<pokshell_wayland::Server>,
+    escape: escape::EscapeChord,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -171,6 +173,19 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
     seat_events.handle().insert_source(input_backend, |event, _, state| {
         state.input_events += 1;
         match event {
+            InputEvent::Keyboard { event } => {
+                // Hardware emergency exit even while the game owns keyboard
+                // focus and Ctrl+C no longer reaches the terminal.
+                use smithay::backend::input::{KeyboardKeyEvent, KeyState};
+                if state.escape.key(event.key_code().raw(), event.state() == KeyState::Pressed) {
+                    eprintln!("poknative: Ctrl+Alt+Backspace emergency session shutdown");
+                    SHUTDOWN.store(true, Ordering::Release);
+                } else if state.gate.may_submit() {
+                    if let Some(server) = state.server.as_mut() {
+                        server.state.input(InputEvent::Keyboard { event });
+                    }
+                }
+            }
             InputEvent::DeviceAdded { .. } => eprintln!("poknative: libinput device added"),
             InputEvent::DeviceRemoved { .. } => eprintln!("poknative: libinput device removed"),
             _ => {
@@ -347,6 +362,8 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
             state.server = Some(server);
             let mut pump = frame::FramePump::default();
             let mut observed = state.vblanks;
+            let startup_deadline = Instant::now() + Duration::from_secs(30);
+            eprintln!("poknative: waiting up to 30s for first game frame; Ctrl+Alt+Backspace exits");
             loop {
                 if SHUTDOWN.load(Ordering::Acquire) { break; }
                 // Gate::configured() MUST follow a successful initial KMS
@@ -365,6 +382,15 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
                 server.dispatch()?;
                 let _imports = server.process_dmabufs(&mut renderer);
                 server.flush()?;
+                // A blank KMS commit hides the terminal before any client
+                // can render. Never submit it as the first frame.
+                if !pump.has_submitted() && !server.game_has_content(&mut renderer) {
+                    if Instant::now() >= startup_deadline {
+                        return Err("no renderable game surface after 30s; leaving the TTY visible".into());
+                    }
+                    seat_events.dispatch(Duration::from_millis(50), &mut state)?;
+                    continue;
+                }
                 if pump.should_render(state.gate.active(), server.dirty()) {
                     output::queue_wayland(&mut buffered, &mut renderer, server, size)?;
                     if !pump.has_submitted() {
