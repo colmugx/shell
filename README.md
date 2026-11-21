@@ -11,8 +11,8 @@ Game-first native Linux console-session research. **Not a completed Linux distri
 
 - Start on **a full ARM64 Linux distribution** (Debian in UTM, proven device-specific Linux on real hardware).
 - Run a **standalone game-console session** rather than extend GNOME/KDE or write a desktop theme.
-- Implement core services in **Rust**, component logic preferably in **MoonBit**, optional tiny scripts in **Lua**, and introduce TypeScript **only if absolutely necessary**.
-- Native ARM64 executables remain the primary games; **WAMR Core Wasm** is for system/overlay components, not game binaries. WIT is not required.
+- Implement system/device/core services in **Rust** and the production user interface in **PocketJS** (using its upstream JavaScript/TypeScript application contract). MoonBit/WAMR and Lua are optional, not mandatory UI replacements.
+- Native ARM64 executables remain primary game workloads; emulator cores use native/Libretro-like ABIs where appropriate. **WAMR Core Wasm** is only an optional component sandbox, not the game format.
 - Kernel, boot chain, GPU drivers and hardware bring-up remain external board-specific work. Defer custom rootfs images until the userspace stack works.
 
 Read [Linux-first strategy and language choices](docs/boot-and-languages.md) and [architecture](docs/architecture.md).

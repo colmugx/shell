@@ -1,41 +1,59 @@
-# pokshell architecture: Linux first, game session first
+# pokshell system architecture
 
-[Full Linux-first strategy and language decisions](boot-and-languages.md).
+**Canonical product and milestone contract:** [ROADMAP.md](../ROADMAP.md).
+**Codex parallel development:** [agent work packages](agent-workstreams.md).
+This document records component boundaries; it does not override the roadmap.
 
 ```text
-Bootloader + hardware-specific Linux kernel / device tree
+Linux kernel + device tree + open GPU/input/audio drivers + minimal userspace
     |
-existing Debian ARM64 (UTM) or board-supported Linux (handheld)
-    |
-session/seat management, Mesa, DRM/KMS, input and audio
-    |
-Rust: pokshelld + game lifecycle / IPC             [started]
-    |
-Rust: nested Smithay Wayland server                 [experimental]\n    |\nRust: DRM/KMS native-session backend                 [planned; pokdrm UAPI/read-only probe added]
-     +-- native ARM64 Linux game process
-     +-- independent system overlay surface
-     +-- gamepad/touch focus and multi-screen policy
-    |
-Rust UI host (technology decision pending)          [planned]
-     +-- MoonBit system components via WAMR          [planned]
-     +-- Lua optional
-     +-- TypeScript only as last resort
+Native Rust system services (seat, display, game lifecycle, power, IPC)
+    +-- Smithay Wayland compositor
+    |    +-- DRM/KMS connector/CRTC/plane and vblank (P1 in progress)
+    |    +-- GBM/EGL/GLES or capable Vulkan import/render path
+    |    +-- game XDG/layer-shell surfaces, overlays, input focus
+    +-- Game runtime (native Linux, SDL/GLES/Vulkan, Proton as appropriate)
+    +-- Emulator Core Host (P3 Libretro-like core adapters, not full frontends)
+    +-- PocketJS system host (P2)
+         +-- HOME, Library, Settings, Overlay, Plugins
+         +-- native pixel/UI pipeline; normal unprivileged application code
 ```
 
-A Wayland compositor is the intended **system graphical session**, not a traditional desktop environment. We do not create a new kernel or graphical widget toolkit in v0.1.
+The *sole production shell* is PocketJS. Its upstream JavaScript/TypeScript
+application contract and native core are intentional; React/Electron/browser
+or KDE are not runtime dependencies. Rust owns privileged session/device
+operations and latency-sensitive paths. Portable MoonBit/WAMR and Lua
+components may be added where justified and measured; they are not a
+prerequisite to a working PocketJS UI.
 
-## Existing implementation
+## Current implementation boundaries
 
-- `rust/`: pure-Rust native-game supervisor, bounded multi-client IPC daemon, live in-memory state-change events and CLI; overlay **state only**; no display backend.
-- `src/`: legacy C software framebuffer prototype; useful for testing direct frame access but does **not** implement generic games or a production overlay.
+- `rust/`: native game-process supervisor `pokshelld`, `pokctl` IPC,
+  `poksession` nested developer harness, and read-only `pokdrm`.
+- `rust/compositor`: nested Smithay Winit Wayland server used to prove
+  SuperTux+menu input coexistence in KDE/UTM; **not** the target display.
+- `graphics/wayland-layer`: Rust SHM game menu diagnostic client. This is
+  replaced/hosted by PocketJS once the UI contract is integrated.
+- `rust/native`: independent libseat/udev/libinput/DRM/GBM/EGL/GLES
+  initialization, KMS route selection and seat generation guard. It
+  **does not yet modeset, page flip or render a Wayland game natively**.
+- `src/`: disposable C framebuffer experiment; not product code.
 
-## Intended acceptance gates
+## Engineering gates
 
-1. Real ARM64 Linux userspace run on UTM using a standalone session daemon.
-2. Native DRM/KMS-backed Wayland compositor controls focus and game surfaces.
-3. Arbitrary native SDL/GLES game continues running while an independently drawn overlay is interactive.
-4. A native shell UI renders the game library, with gamepad and touch handling.
-5. Optional MoonBit/WAMR components integrate without a JS dependency.
-6. Board-specific startup and input/power/graphics evidence for Low/Mid/High reference targets.
+P1: native TTY seat + atomic KMS scanout + game and overlay on same output;
+input isolation, hotplug, pause/resume, safe release.
 
-Do not call gates 2–6 implemented until tested.
+P2: reproducible PocketJS native UI build/host, system RPC, input integration,
+Home/Library/Settings/Overlay, performance evidence.
+
+P3: independent emulator cores, system-owned video/audio/input/saves, safe
+fallback for incompatible cores.
+
+P4: device-specific slim Linux image, updates/recovery, tested GPU/power and
+suspend/resume, measured battery performance.
+
+See [native Linux acceptance](native-linux.md) and
+[verification evidence](verification.md). Passing a nested Wayland test
+does not satisfy native scanout, and compiling EGL does not establish
+hardware rendering.

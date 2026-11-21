@@ -1,72 +1,58 @@
-# pokshell v0.1 language and boot strategy
+# pokshell boot strategy and language policy
 
-Updated 2026-11-20. This document records the target architecture and the implemented Rust bootstrap separately.
+See [ROADMAP.md](../ROADMAP.md) for the authoritative product roadmap and
+[architecture](architecture.md) for current component boundaries.
 
-## Decision
+## Boot and platform strategy
 
-**Start from an existing Linux distribution, implement a dedicated console session, then produce a trimmed system image.** Do not start by writing a kernel or by building a desktop theme on GNOME/KDE.
+Start from a working upstream Linux kernel/driver stack and a conventional
+userspace while P1 is being developed. Debian ARM64 in UTM is a reproducible
+**nested integration harness**, not an emulation of target Mali/Adreno GPUs.
+On physical handhelds use a device-specific working boot chain, kernel,
+device tree and firmware with matching DRM/Mesa/input/power drivers.
 
-- **UTM/ARM Mac:** Debian 13 ARM64 under QEMU `virt` for portable userspace testing. This is not a simulator of H700, QCS6125 or SM8550 GPUs.
-- **Physical devices:** Start from a working Linux board image / kernel / device tree / boot chain appropriate to the actual handheld. Reuse ROCKNIX and other upstream patches under their original licenses; do not substitute an ARM64 generic rootfs for a complete board port.
-- **System image:** Once display/input/suspend and game sessions work, evaluate Arch Linux ARM or Buildroot as a reproducible, stripped-down root filesystem. Kernel choice follows **board support**, not distro branding.
-- **Execution model:** start a standalone game-first systemd user/session service, not GNOME/KDE/Xfce and not a browser UI. The Rust runtime is initially terminal/headless; a real Wayland compositor is the next independent engineering milestone.
+Only after native graphics/seat/game lifecycle works should we produce a
+reproducible slim Linux image using a tool such as Buildroot or Yocto.
+Minimize *measured* RAM, CPU wakeups, idle power and background processes,
+while preserving safety, driver support, networking/storage/audio and recovery.
 
-## Language policy
+No production dependency on KDE, GNOME, Xfce or a browser is allowed.
+`poksession`/Winit/KDE remain debug tools, not the intended boot target.
 
-1. **Rust** is the default for native system services, IPC, process supervision, input routing and a future compositor. Prefer safe Rust and well-maintained typed bindings to system libraries.
-2. **MoonBit** is preferred for portable system extension and UI/business logic modules when its backend and target integration are suitable. Candidate deployment: WAMR Core Wasm with an explicitly defined host API. No WIT requirement.
-3. **Lua** is acceptable for small scripting/configuration tasks.
-4. **TypeScript** is an exceptional dependency only if a mandatory upstream frontend/runtime cannot be used otherwise. No TS/browser/Electron runtime in the v0.1 base.
-5. **C** may appear as an ABI boundary, upstream library or historical alpha; do not use it for new application logic by default.
+## Language and runtime policy
 
-**PocketJS is not a language mandate.** Its current upstream interface/runtime may force a later technical trade-off; verify a viable Rust/MoonBit UI path rather than promising TS-free PocketJS integration before validating it.
+1. **Rust** for Linux session, DRM/KMS/Smithay, game-process supervision,
+   input/audio/power, permissioned system RPC and emulator integration.
+2. **PocketJS** is the production shell UI, using its **actual upstream
+   JavaScript/TypeScript component contract**, QuickJS/native Rust host
+   infrastructure and supported rendering APIs. The UI is not a separate
+   Electron/browser application. Do not promise TS-free PocketJS.
+3. **MoonBit/WAMR** where proven useful for portable or isolated optional
+   components; **Lua** for tiny configuration/scripts when justified.
+4. **C/C++** only where demanded by kernel/graphics/emulator ABI boundaries or
+   existing upstream cores. Preserve third-party licenses.
 
-## Milestones and acceptance tests
+Project goals are performance, efficiency, compatibility and power budgets,
+not minimizing source-language count. Avoid adding extra processes where they
+duplicate an existing component, but do not merge untrusted cores into the
+privileged system process without isolation evidence.
 
-| Gate | Objective | Status |
-| --- | --- | --- |
-| R0 | Native Rust session daemon, fixed configured game process, IPC, overlay lifecycle state, unit/integration tests | Implemented in `rust/`; GitHub Actions verification required |
-| R1 | Run the Rust daemon and native game on ARM64 Debian/UTM without any desktop environment | Not verified in UTM |
-| R2 | Real DRM/KMS + GBM/EGL or Vulkan-backed Wayland session and arbitrary native SDL/GLES game; overlay remains interactive and game continues | Not implemented |
-| R3 | Polished native console UI, game library, controller/touch focus; MoonBit component executes via WAMR | Not implemented |
-| R4 | Board-specific startup on H700, Duo Lite and RP6 with driver/thermal/power checks | Not implemented |
-| R5 | Reproducible image and performance budgets on the three hardware baselines | Not implemented |
+## Acceptance and reproducibility
 
-The `OVERLAY OPEN/CLOSE` IPC in R0 **changes state only**. It does not draw a layer over a running game. Nothing in R0 claims to be a full OS.
+Follow `ROADMAP.md` P1–P4 gates. The required progression is:
+source → compiled on x86-64/ARM64 → headless protocol → UTM manual →
+real seat/DRM scanout → actual handheld/performance/power acceptance.
 
-## Why keep the earlier C alpha?
+A DRM-capable Linux device must be accessed as an authorized **non-root**
+seat user on a separate TTY, not via root or a KDE session takeover.
+The legacy C framebuffer experiment remains a CI baseline only until
+deliberately retired.
 
-The C `src/` code remains an historical framebuffer experiment and headless smoke-test baseline, not the future architecture. The Rust path is additive until it independently covers the required runtime behavior, at which point the C framebuffer alpha can move to `experiments/` and be removed from default images.
+## Upstream interfaces
 
-## Development commands
-
-On a Linux machine with Rust/Cargo and Python 3:
-
-```sh
-cd rust
-cargo test --workspace --locked
-cargo build --workspace --locked
-python3 tests/ipc_integration.py
-```
-
-Run a configured test game as your ordinary user:
-
-```sh
-cd rust
-cargo run --bin pokshelld -- --game /bin/sleep --game-arg 120
-# In a second terminal:
-cargo run --bin pokctl -- STATUS
-cargo run --bin pokctl -- GAME START
-cargo run --bin pokctl -- OVERLAY OPEN
-cargo run --bin pokctl -- GAME STOP
-cargo run --bin pokctl -- QUIT
-```
-
-Sockets live at `$XDG_RUNTIME_DIR/pokshell.sock` if set, else a local `./pokshell.sock` for development. The CLI/server do not support remote TCP access. The fixed configured executable is never interpolated through a shell.
-
-## Upstream investigation targets
-
-- Smithay: https://github.com/Smithay/smithay (Rust components for a Wayland compositor; **not** a ready-made console session)
-- Mesa / Linux DRM KMS: https://docs.kernel.org/gpu/drm-kms.html
-- WAMR: https://github.com/bytecodealliance/wasm-micro-runtime
-- MoonBit language docs: https://docs.moonbitlang.com/
+- PocketJS: https://github.com/pocket-nexus/pocketjs
+- Smithay: https://github.com/Smithay/smithay
+- Linux DRM/KMS: https://docs.kernel.org/gpu/drm-kms.html
+- Libretro core interface: https://docs.libretro.com/development/cores/
+- Mesa: https://mesa3d.org/
+- WAMR (optional): https://github.com/bytecodealliance/wasm-micro-runtime
