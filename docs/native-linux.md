@@ -151,3 +151,27 @@ or native Wayland game rendering. The original immediate blue-to-green swap
 made blue effectively invisible; the diagnostic now holds each color.
 `egl_device_software=true` and absent `EGL_EXT_device_drm` do not invalidate
 the DRM scanout, but do not establish hardware-accelerated GLES performance.
+
+## P1-N07 one-command native game + menu lifecycle (experimental)
+
+The `poksession --native` CLI starts the seat-authorized `poknative
+--wayland` server, waits for its socket announcement, then starts the
+real `pokshelld` daemon (game pinned to the native `pokshell-*` Wayland
+display) and `pokshell-layer --menu` on that **same** server.
+The TTY user's Ctrl+C terminates only those child processes owned by
+the supervisor. Do not run from KDE or as root. The game and layer do
+not launch until the compositor has announced its real Wayland socket.
+
+After compiling the Rust workspace, native backend and menu client:
+
+```sh
+./rust/target/debug/poksession --native --card /dev/dri/card0 \
+  --game /usr/games/supertux
+```
+
+Expected `POKSESSION_READY backend=native`, SuperTux and menu on the
+native KMS scanout, and `pokctl OVERLAY OPEN` to toggle the menu.
+A separate TTY or SSH connection can issue pokctl commands. This is an
+**experimental runtime acceptance**: do not mark native game/Overlay
+presentation or libinput focus as passed until tested with UTM screenshots
+and logs. CI verifies the process/socket lifecycle without access to DRM.
