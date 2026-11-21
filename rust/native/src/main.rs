@@ -7,6 +7,7 @@
 mod kms;
 mod seat;
 mod output;
+mod frame;
 
 use kms::Candidate;
 use smithay::{
@@ -342,37 +343,44 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
             }
             println!("WAYLAND_DISPLAY={}", server.socket_name());
             state.server = Some(server);
-            let mut pending = false;
+            let mut pump = frame::FramePump::default();
             let mut observed = state.vblanks;
-            let mut submitted_at = Instant::now();
-            state.gate.configured();
             loop {
                 if SHUTDOWN.load(Ordering::Acquire) { break; }
-                if !state.gate.may_submit() || !session.is_active() || state.drm_error {
+                // Gate::configured() MUST follow a successful initial KMS
+                // submission, not merely the creation of the Wayland socket.
+                if !state.gate.active() || !session.is_active() || state.drm_error
+                    || (pump.has_submitted() && !state.gate.may_submit()) {
                     return Err("native session lost seat or output; stopping".into());
                 }
                 let server = state.server.as_mut().expect("native Wayland server");
                 if state.vblanks != observed {
                     observed = state.vblanks;
-                    if buffered.frame_submitted()?.is_some() {
-                        pending = false;
+                    if buffered.frame_submitted()?.is_some() && pump.acknowledged() {
                         server.frame_done();
                     }
                 }
                 server.dispatch()?;
-                if !pending && server.dirty() {
+                if pump.should_render(state.gate.active(), server.dirty()) {
                     output::queue_wayland(&mut buffered, &mut renderer, server, size)?;
-                    pending = true;
-                    submitted_at = Instant::now();
+                    if !pump.has_submitted() {
+                        state.gate.configured();
+                        println!("native_kms_first_frame_queued=yes");
+                    }
+                    pump.submitted(Instant::now());
                     server.rendered();
                 }
-                if pending && submitted_at.elapsed() >= Duration::from_secs(3) {
+                if pump.timed_out(Instant::now(), Duration::from_secs(3)) {
                     return Err("native Wayland page flip timeout".into());
                 }
                 // Socket/DRM/input readiness wakes the event loop. No
                 // recurring raster or buffer submission when the UI is idle.
-                seat_events.dispatch(Duration::from_millis(if pending { 100 } else { 1000 }), &mut state)?;
+                seat_events.dispatch(Duration::from_millis(
+                    if pump.counts().0 > pump.counts().1 { 100 } else { 1000 }),
+                    &mut state)?;
             }
+            let (submitted, presented) = pump.counts();
+            println!("native_frames_submitted={submitted} presented={presented}");
             drop(buffered);
             println!("native_wayland_session=stopped");
             return Ok(());
