@@ -1,5 +1,8 @@
 # pokshell
 
+**Project contract:** [Product roadmap](ROADMAP.md) · [Codex/subagent work packages](docs/agent-workstreams.md) · [Native Linux work](docs/native-linux.md) · [Verification](docs/verification.md).
+
+
 Game-first native Linux console-session research. **Not a completed Linux distribution.**
 
 **Three reference platforms:** RG35XX H / RG40XX H (or H700-class equivalent), Retroid Pocket Duo Lite (QCS6125), Retroid Pocket 6. [Hardware baselines](docs/hardware-baselines.md).
