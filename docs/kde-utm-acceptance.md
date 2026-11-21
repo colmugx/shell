@@ -225,3 +225,38 @@ When the SuperTux menu is visible inside the Smithay window:
 CI has passed a software SDL2 fullscreen XDG request test; the real
 SuperTux/OpenGL fullscreen and resize behavior remains a separate
 UTM manual acceptance gate.
+
+## System menu acceptance (new)
+
+This sprint adds `pokshell-layer --menu`, a text-bearing **game system menu**
+drawn in Wayland SHM buffers, not a KDE window. Use it instead of
+`--interactive --keyboard-interactive` after rebuilding the layer client.
+
+The menu opens with `OVERLAY OPEN` and requests exclusive keyboard focus
+**only while visible**. There are three fixed actions:
+
+- **RESUME**: `OVERLAY CLOSE`, game PID remains unchanged
+- **RESTART GAME**: `GAME STOP` then `GAME START`, new PID expected
+- **STOP GAME**: `GAME STOP`, pokcomp host window stays running
+
+Up/Down (or W/S) changes selection, Enter/Space selects, Escape resumes.
+Mouse hover changes selection; left-click on a row selects it. Actions
+execute in a separate worker so a slow game stop cannot block Wayland
+event processing. The menu does **not** execute configurable shell commands.
+
+Manual UTM gate:
+
+1. Start `pokcomp`, `pokshelld`, and `pokshell-layer --menu --socket
+   "$XDG_RUNTIME_DIR/pokshell.sock"` as the same non-root KDE user.
+2. Start SuperTux, record `pokctl STATUS` PID, then `OVERLAY OPEN`.
+   Confirm readable labels on the right side of the **same Smithay window**.
+3. Press Down twice, then Up once: highlight should move to RESTART GAME.
+   Press Escape to resume; game PID must remain unchanged and keyboard
+   focus must return to SuperTux.
+4. Reopen; select RESTART GAME via Down then Enter. Verify a new game PID,
+   same Smithay host window, menu hidden and process not orphaned.
+5. Reopen; select STOP GAME. Verify `mode=home`, game stopped and the
+   compositor remains open.
+
+**Not yet implemented or accepted:** physical gamepad navigation, gamepad
+input capture/exclusivity, multi-display, native DRM/KMS.

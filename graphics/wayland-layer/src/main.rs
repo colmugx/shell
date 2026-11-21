@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Temporary, actual Wayland layer-shell transport: not the final UI or compositor.
 //! A separate Wayland game surface continues running underneath this overlay.
+mod menu;
+
+use menu::{MenuAction, MenuState};
 use std::env;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Seek, SeekFrom, Write};
@@ -9,6 +12,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
 use wayland_client::{
@@ -21,6 +25,7 @@ use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_l
 
 const PANEL_WIDTH: i32 = 320;
 const MAX_HEIGHT: i32 = 4096;
+
 
 fn default_socket() -> PathBuf {
     env::var_os("XDG_RUNTIME_DIR")
@@ -94,12 +99,17 @@ struct App {
     pool: Option<wl_shm_pool::WlShmPool>,
     empty: Option<wl_buffer::WlBuffer>,
     panel: Option<wl_buffer::WlBuffer>,
+    menu_buffers: Vec<wl_buffer::WlBuffer>,
     backing: Option<File>,
+    menu: Option<MenuState>,
+    action_tx: Sender<(MenuAction, Result<(), String>)>,
+    action_rx: Receiver<(MenuAction, Result<(), String>)>,
+    action_pending: bool,
     configured: bool,
     closed: bool,
     width: i32,
     height: i32,
-    drawn: Option<bool>,
+    drawn: Option<(bool, usize)>,
 }
 
 impl App {
@@ -112,21 +122,39 @@ impl App {
         let size = (width as usize).checked_mul(height as usize)
             .and_then(|n| n.checked_mul(4))
             .ok_or_else(|| io::Error::other("framebuffer size overflow"))?;
-        let total = size.checked_mul(2).ok_or_else(|| io::Error::other("buffer overflow"))?;
+        // Pre-render immutable selection variants. Never write a wl_shm
+        // buffer after a compositor might have attached it.
+        let variants = if self.menu.is_some() { MenuAction::ALL.len() } else { 1 };
+        let count = variants + 1; // transparent idle buffer
+        let total = size.checked_mul(count).ok_or_else(|| io::Error::other("buffer overflow"))?;
         if total > i32::MAX as usize { return Err(io::Error::other("shm allocation exceeds protocol limit")); }
         let mut file = tempfile::tempfile()?;
         file.set_len(total as u64)?;
-        // Two immutable buffers. No per-frame allocation and no memory mutation
-        // while the Wayland compositor may still be reading the buffer.
-        file.seek(SeekFrom::Start(size as u64))?;
-        file.write_all(&paint(width, height, true))?;
+        for selected in 0..variants {
+            file.seek(SeekFrom::Start((size * (selected + 1)) as u64))?;
+            let pixels = if self.menu.is_some() {
+                menu::paint(width, height, selected)
+            } else {
+                paint(width, height, true)
+            };
+            file.write_all(&pixels)?;
+        }
         let pool = self.shm.create_pool(file.as_fd(), total as i32, qh, ());
         let empty = pool.create_buffer(0, width, height, width * 4, wl_shm::Format::Argb8888, qh, ());
-        let panel = pool.create_buffer(size as i32, width, height, width * 4,
-            wl_shm::Format::Argb8888, qh, ());
+        let mut buffers = Vec::with_capacity(variants);
+        for selected in 0..variants {
+            buffers.push(pool.create_buffer((size * (selected + 1)) as i32,
+                width, height, width * 4, wl_shm::Format::Argb8888, qh, ()));
+        }
         self.pool = Some(pool);
         self.empty = Some(empty);
-        self.panel = Some(panel);
+        if self.menu.is_some() {
+            self.panel = None;
+            self.menu_buffers = buffers;
+        } else {
+            self.panel = buffers.pop();
+            self.menu_buffers.clear();
+        }
         self.backing = Some(file);
         self.drawn = None;
         Ok(())
@@ -143,40 +171,92 @@ impl App {
         }
     }
 
-    fn show(&mut self, visible: bool, qh: &QueueHandle<Self>) {
-        if !self.configured || self.drawn == Some(visible) { return; }
+    fn request_menu_action(&mut self, action: MenuAction, via: &'static str) {
+        if self.action_pending || self.drawn.map(|x| x.0) != Some(true) { return; }
+        self.action_pending = true;
+        let socket = self.control_socket.clone();
+        let sender = self.action_tx.clone();
+        eprintln!("pokshell-layer menu action={} via={via}", action.label());
+        // Restart may block waiting for a process group to terminate.
+        // Never block the Wayland event loop waiting for pokshelld.
+        thread::spawn(move || {
+            let result = run_menu_commands(&socket, action);
+            let _ = sender.send((action, result));
+        });
+    }
 
-        // Hidden layers never intercept input. An interactive visible layer
-        // has its own Wayland pointer region; the old diagnostic mode remains
-        // click-through even while displayed.
-        let region = self.compositor.create_region(
-            qh, (),
-        );
-        if visible && self.interactive {
-            region.add(0, 0, self.width, self.height);
-        }
-        self.surface.set_input_region(Some(&region));
-        region.destroy();
-        // Request focus only while shown, never keep focus on an
-        // invisible/transparent layer. The compositor restores the game.
-        if self.keyboard_interactive {
-            self.layer.set_keyboard_interactivity(
-                if visible {
-                    zwlr_layer_surface_v1::KeyboardInteractivity::OnDemand
-                } else {
-                    zwlr_layer_surface_v1::KeyboardInteractivity::None
+    fn poll_action(&mut self) {
+        while let Ok((action, result)) = self.action_rx.try_recv() {
+            match result {
+                Ok(()) => eprintln!("pokshell-layer menu completed action={}", action.label()),
+                Err(err) => {
+                    self.action_pending = false; // Allow an explicit retry.
+                    eprintln!("pokshell-layer menu failed action={}: {err}", action.label());
                 }
-            );
+            }
         }
-        let buffer = if visible { &self.panel } else { &self.empty };
+    }
+
+    fn show(&mut self, visible: bool, qh: &QueueHandle<Self>) {
+        if !self.configured { return; }
+        let was_visible = self.drawn.map(|(was, _)| was).unwrap_or(false);
+        if visible && !was_visible {
+            if let Some(menu) = &mut self.menu { menu.reset(); }
+            self.action_pending = false;
+        }
+        if !visible { self.action_pending = false; }
+        let selected = self.menu.as_ref().map(MenuState::selected).unwrap_or(0);
+        if self.drawn == Some((visible, selected)) { return; }
+
+        // Selection changes only swap immutable pre-rendered wl_shm buffers.
+        // Input regions and focus policy change only when visibility does.
+        if self.drawn.is_none() || was_visible != visible {
+            let region = self.compositor.create_region(qh, ());
+            if visible && self.interactive {
+                region.add(0, 0, self.width, self.height);
+            }
+            self.surface.set_input_region(Some(&region));
+            region.destroy();
+            if self.keyboard_interactive {
+                self.layer.set_keyboard_interactivity(if !visible {
+                    zwlr_layer_surface_v1::KeyboardInteractivity::None
+                } else if self.menu.is_some() {
+                    // Game system menu obtains keyboard focus without
+                    // requiring a right-click to activate it.
+                    zwlr_layer_surface_v1::KeyboardInteractivity::Exclusive
+                } else {
+                    zwlr_layer_surface_v1::KeyboardInteractivity::OnDemand
+                });
+            }
+        }
+        let buffer = if !visible { self.empty.as_ref() }
+            else if self.menu.is_some() { self.menu_buffers.get(selected) }
+            else { self.panel.as_ref() };
         if let Some(buffer) = buffer {
             self.surface.attach(Some(buffer), 0, 0);
             self.surface.damage_buffer(0, 0, self.width, self.height);
             self.surface.commit();
-            self.drawn = Some(visible);
-            eprintln!("pokshell-layer buffer committed visible={}", u8::from(visible));
+            self.drawn = Some((visible, selected));
+            eprintln!("pokshell-layer buffer committed visible={} selected={}",
+                u8::from(visible), selected);
         }
     }
+}
+
+fn run_menu_commands(socket: &std::path::Path, action: MenuAction) -> Result<(), String> {
+    for request in action.commands() {
+        let mut stream = UnixStream::connect(socket).map_err(|e| e.to_string())?;
+        stream.set_write_timeout(Some(Duration::from_secs(4))).map_err(|e| e.to_string())?;
+        stream.set_read_timeout(Some(Duration::from_secs(8))).map_err(|e| e.to_string())?;
+        stream.write_all(request.as_bytes()).map_err(|e| e.to_string())?;
+        stream.write_all(b"\\n").map_err(|e| e.to_string())?;
+        let mut line = String::new();
+        BufReader::new(stream.take(1024)).read_line(&mut line).map_err(|e| e.to_string())?;
+        if !line.starts_with("OK ") {
+            return Err(format!("{request}: {}", line.trim()));
+        }
+    }
+    Ok(())
 }
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for App {
@@ -214,14 +294,26 @@ impl Dispatch<wl_seat::WlSeat, ()> for App {
 impl Dispatch<wl_pointer::WlPointer, ()> for App {
     fn event(state: &mut Self, _: &wl_pointer::WlPointer, event: wl_pointer::Event,
         _: &(), _: &Connection, _: &QueueHandle<Self>) {
-        if let wl_pointer::Event::Button {
-            button: 0x110, state: wayland_client::WEnum::Value(wl_pointer::ButtonState::Pressed), ..
-        } = event {
-            if state.interactive && state.drawn == Some(true) {
-                // Single-item diagnostic menu: click closes the overlay.
-                // Games remain untouched: pokshelld owns their lifecycle.
-                state.request_overlay_close("pointer");
+        match event {
+            wl_pointer::Event::Enter { surface_x, surface_y, .. }
+            | wl_pointer::Event::Motion { surface_x, surface_y, .. } => {
+                if state.drawn.map(|x| x.0) == Some(true) {
+                    if let Some(menu) = &mut state.menu {
+                        menu.pointer(surface_x, surface_y);
+                    }
+                }
             }
+            wl_pointer::Event::Button {
+                button: 0x110,
+                state: wayland_client::WEnum::Value(wl_pointer::ButtonState::Pressed), ..
+            } if state.interactive && state.drawn.map(|x| x.0) == Some(true) => {
+                if let Some(menu) = &state.menu {
+                    state.request_menu_action(menu.current(), "pointer");
+                } else {
+                    state.request_overlay_close("pointer");
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -229,12 +321,20 @@ impl Dispatch<wl_pointer::WlPointer, ()> for App {
 impl Dispatch<wl_keyboard::WlKeyboard, ()> for App {
     fn event(state: &mut Self, _: &wl_keyboard::WlKeyboard, event: wl_keyboard::Event,
         _: &(), _: &Connection, _: &QueueHandle<Self>) {
-        // EV_KEY code 1 = Escape. Keymap-independent diagnostic shortcut;
-        // production menus will use libxkbcommon and proper action routing.
+        if let wl_keyboard::Event::Enter { .. } = event {
+            eprintln!("pokshell-layer keyboard focused");
+        }
         if let wl_keyboard::Event::Key {
-            key: 1, state: wayland_client::WEnum::Value(wl_keyboard::KeyState::Pressed), ..
+            key, state: wayland_client::WEnum::Value(wl_keyboard::KeyState::Pressed), ..
         } = event {
-            if state.keyboard_interactive && state.drawn == Some(true) {
+            if !state.keyboard_interactive || state.drawn.map(|x| x.0) != Some(true) {
+                return;
+            }
+            if let Some(menu) = &mut state.menu {
+                if let Some(action) = menu::key_pressed(key, menu) {
+                    state.request_menu_action(action, "keyboard");
+                }
+            } else if key == 1 {
                 state.request_overlay_close("escape");
             }
         }
@@ -268,6 +368,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut force_visible = false;
     let mut interactive = false;
     let mut keyboard_interactive = false;
+    let mut menu_mode = false;
     let mut args = env::args_os().skip(1);
     while let Some(arg) = args.next() {
         match arg.to_str() {
@@ -278,8 +379,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 keyboard_interactive = true;
                 interactive = true;
             },
+            Some("--menu") => {
+                menu_mode = true;
+                keyboard_interactive = true;
+                interactive = true;
+            },
             Some("--help") => {
-                println!("pokshell-layer [--socket PATH] [--show] [--interactive] [--keyboard-interactive]\nRequires Wayland compositor with wlr-layer-shell-v1");
+                println!("pokshell-layer [--socket PATH] [--show] [--interactive] [--keyboard-interactive] [--menu]\nRequires Wayland compositor with wlr-layer-shell-v1");
                 return Ok(());
             }
             _ => return Err(format!("unknown argument: {}", arg.to_string_lossy()).into()),
@@ -314,14 +420,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     layer.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None); // Do not steal keyboard focus.
     surface.commit(); // No buffer until first Configure.
 
+    let (action_tx, action_rx) = mpsc::channel();
     let mut app = App {
         surface, layer, compositor, _seat: seat, pointer: None, keyboard: None,
         interactive, keyboard_interactive, control_socket: socket,
-        shm, pool: None, empty: None, panel: None, backing: None,
+        shm, pool: None, empty: None, panel: None, menu_buffers: Vec::new(),
+        backing: None, menu: menu_mode.then(MenuState::default),
+        action_tx, action_rx, action_pending: false,
         configured: false, closed: false, width: PANEL_WIDTH, height: 720, drawn: None,
     };
     while !app.closed {
         queue.roundtrip(&mut app)?;
+        app.poll_action();
         app.show(visible.load(Ordering::Acquire), &qh);
         thread::sleep(Duration::from_millis(50));
     }
