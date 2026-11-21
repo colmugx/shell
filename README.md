@@ -66,7 +66,9 @@ pointer routing now honors surface input regions. Game launch with
 `pokshelld --game-wayland-display pokshell-N` explicitly targets the
 nested compositor's socket and disables KDE/X11 fallback (see
 [UTM acceptance](docs/kde-utm-acceptance.md)). **The nested UTM game display and diagnostic overlay input have been
-user-accepted; the new graphical game menu still needs UTM acceptance.
+user-accepted; the new graphical game menu's **compositor placement** still needs UTM re-acceptance:
+use `pokshell-layer --menu --display pokshell-N` to prevent it from
+accidentally attaching to the KDE host.
 No native DRM/KMS, exclusive gamepad focus or handheld graphics is claimed.** See the
 [compositor build and manual test guide](docs/compositor.md).
 

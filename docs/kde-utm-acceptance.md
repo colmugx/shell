@@ -99,7 +99,8 @@ cd ~/workspace/shell
 export WAYLAND_DISPLAY=pokshell-1  # same value as B, not KDE's host socket
 ./graphics/wayland-layer/target/debug/pokshell-layer \
     --socket "$XDG_RUNTIME_DIR/pokshell.sock" \
-    --interactive --keyboard-interactive
+    --interactive --keyboard-interactive \
+    --display pokshell-1
 ```
 
 Expected: layer Configure log. While overlay is closed it is transparent
@@ -249,8 +250,9 @@ event processing. The menu does **not** execute configurable shell commands.
 
 Manual UTM gate:
 
-1. Start `pokcomp`, `pokshelld`, and `pokshell-layer --menu --socket
-   "$XDG_RUNTIME_DIR/pokshell.sock"` as the same non-root KDE user.
+1. Start `pokcomp`, `pokshelld`, and `pokshell-layer --menu --display
+   pokshell-1 --socket "$XDG_RUNTIME_DIR/pokshell.sock"` as the same
+   non-root KDE user (replace `pokshell-1` with A's real display).
 2. Start SuperTux, record `pokctl STATUS` PID, then `OVERLAY OPEN`.
    Confirm readable labels on the right side of the **same Smithay window**.
 3. Press Down twice, then Up once: highlight should move to RESTART GAME.
@@ -279,7 +281,7 @@ On Linux with a joystick device exposed to the VM, start the menu as:
 ```sh
 ./graphics/wayland-layer/target/debug/pokshell-layer \
     --socket "$XDG_RUNTIME_DIR/pokshell.sock" \
-    --menu --joystick /dev/input/js0
+    --menu --display pokshell-1 --joystick /dev/input/js0
 ```
 
 The prototype maps typical joystick axis 1 or 7 to menu Up/Down with
@@ -290,3 +292,47 @@ EVIOCGRAB. **Controller events can still reach the game underneath the
 overlay**, so it is *not* a verified production controller-focus policy.
 Do not grant root privileges or broaden device permissions just to run
 this optional test.
+
+## Regression: menu renders on KDE instead of inside Smithay
+
+The display server of the game and the menu must be **identical**.
+`pokshell-layer --socket ...` specifies ONLY the pokshelld **IPC**
+endpoint; it does not select the graphical Wayland server. Previously
+`Connection::connect_to_env()` could connect the menu to the inherited
+KDE `WAYLAND_DISPLAY`, leading to a desktop-level overlay.
+
+The new `--menu` mode fails closed unless `--display pokshell-N`
+is supplied. It connects directly to that local Wayland socket using
+`Connection::from_socket`, bypassing both host `WAYLAND_DISPLAY`
+and inherited `WAYLAND_SOCKET`. A missing or non-socket target is a
+startup error. The old diagnostic `--show` probe can still run under
+arbitrary Wayland hosts without this flag.
+
+Use C (normal, non-root KDE Konsole) with the same display printed by A:
+
+```sh
+cd ~/workspace/shell
+./graphics/wayland-layer/target/debug/pokshell-layer \
+    --menu --display pokshell-1 \
+    --socket "$XDG_RUNTIME_DIR/pokshell.sock"
+```
+
+Expected in C: `pokshell-layer connected to nested Wayland
+display=pokshell-1`. Expected in A: `pokcomp: new layer_surface
+namespace=pokshell-system`. Both logs must appear. The menu must
+render **within the Smithay window**, on top of SuperTux, not
+over other KDE windows.
+
+Negative checks:
+
+```sh
+./graphics/wayland-layer/target/debug/pokshell-layer --menu
+./graphics/wayland-layer/target/debug/pokshell-layer --menu --display wayland-0
+./graphics/wayland-layer/target/debug/pokshell-layer --menu --display pokshell-missing
+```
+
+All three must fail with a nonzero exit code and must not create a
+desktop-wide layer surface. Do not run two overlapping Layer Shell
+instances against different display sockets. This behavior is also
+covered by headless CI with deliberately poisoned inherited Wayland
+variables.

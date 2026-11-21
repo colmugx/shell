@@ -141,14 +141,30 @@ with tempfile.TemporaryDirectory(prefix="pokcomp-nested-") as dirname:
                       "--menu" if menu_mode else "--interactive"]
         if not menu_mode:
             layer_args.append("--keyboard-interactive")
+        # Always specify the *nested* server, including for the menu test.
+        # Poison BOTH Wayland env variables: an env-only client would open
+        # under the Sway/KDE host or fail on the invalid inherited fd.
+        layer_args.extend(["--display", "pokshell-test"])
+        layer_hostile_env = {
+            **layer_env,
+            "WAYLAND_DISPLAY": host_socket,
+            "WAYLAND_SOCKET": "999999",
+            "DISPLAY": ":77",
+        }
         layer = spawn(
             layer_args,
-            layer_env, layer_log,
+            layer_hostile_env, layer_log,
         )
         wait_for(
             lambda: "pokshell-layer configured" in layer_log.read_text(errors="replace"),
             layer, layer_log, "pokshell layer client",
         )
+        assert "connected to nested Wayland display=pokshell-test" in (
+            layer_log.read_text(errors="replace")
+        ), "client did not explicitly target the nested Wayland socket"
+        assert "pokcomp: new layer_surface namespace=pokshell-system" in (
+            comp_log.read_text(errors="replace")
+        ), "the nested server did not receive the overlay surface"
 
         def control(*args):
             result = subprocess.run(

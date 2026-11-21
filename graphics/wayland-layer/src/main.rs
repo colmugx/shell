@@ -10,8 +10,9 @@ use std::env;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::fd::AsFd;
+use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -28,6 +29,42 @@ use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_l
 const PANEL_WIDTH: i32 = 320;
 const MAX_HEIGHT: i32 = 4096;
 
+
+/// Validates a Wayland socket basename without consulting the host KDE
+/// WAYLAND_DISPLAY or inherited WAYLAND_SOCKET (which wins over display).
+/// This is deliberately a fail-closed game session transport.
+fn validate_nested_display(runtime: &Path, name: &str) -> Result<PathBuf, String> {
+    if !runtime.is_absolute() {
+        return Err("XDG_RUNTIME_DIR must be an absolute path".into());
+    }
+    if !name.starts_with("pokshell-") || name.len() <= "pokshell-".len()
+        || name.len() > 70
+        || !name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+    {
+        return Err("--display requires a pokshell-* Wayland socket basename".into());
+    }
+    let socket = runtime.join(name);
+    let meta = socket.symlink_metadata().map_err(|err| {
+        format!("nested Wayland socket {} not found: {err}", socket.display())
+    })?;
+    if !meta.file_type().is_socket() {
+        return Err(format!("nested Wayland endpoint {} is not a socket", socket.display()));
+    }
+    Ok(socket)
+}
+
+fn nested_connection(name: &str) -> Result<Connection, Box<dyn std::error::Error>> {
+    let runtime = env::var_os("XDG_RUNTIME_DIR").ok_or("XDG_RUNTIME_DIR missing")?;
+    let socket = validate_nested_display(Path::new(&runtime), name)?;
+    let stream = UnixStream::connect(&socket).map_err(|err| {
+        io::Error::new(err.kind(), format!("cannot connect to nested Wayland {}: {err}", socket.display()))
+    })?;
+    // Crucial: unlike connect_to_env(), from_socket() cannot be silently
+    // redirected to KDE/KWin/XWayland by inherited environment variables.
+    let connection = Connection::from_socket(stream)?;
+    eprintln!("pokshell-layer connected to nested Wayland display={name} path={}", socket.display());
+    Ok(connection)
+}
 
 fn default_socket() -> PathBuf {
     env::var_os("XDG_RUNTIME_DIR")
@@ -398,6 +435,7 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for App {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut socket = default_socket();
+    let mut nested_display: Option<String> = None;
     let mut force_visible = false;
     let mut interactive = false;
     let mut keyboard_interactive = false;
@@ -406,7 +444,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args_os().skip(1);
     while let Some(arg) = args.next() {
         match arg.to_str() {
-            Some("--socket") => socket = PathBuf::from(args.next().ok_or("--socket needs a value")?),
+            Some("--socket") => socket = PathBuf::from(args.next().ok_or("--socket needs an IPC path")?),
+            Some("--display") if nested_display.is_none() => {
+                nested_display = Some(args.next().ok_or("--display needs a socket basename")?
+                    .to_str().ok_or("--display must be UTF-8")?.to_owned());
+            },
+            Some("--display") => return Err("--display may be specified only once".into()),
             Some("--show") => force_visible = true,
             Some("--interactive") => interactive = true,
             Some("--keyboard-interactive") => {
@@ -422,11 +465,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 joystick_path = Some(PathBuf::from(args.next().ok_or("--joystick needs a path")?));
             },
             Some("--help") => {
-                println!("pokshell-layer [--socket PATH] [--show] [--interactive] [--keyboard-interactive] [--menu] [--joystick /dev/input/js0]\nRequires Wayland compositor with wlr-layer-shell-v1");
+                println!("pokshell-layer [--socket IPC_PATH] [--display pokshell-N] [--show] [--interactive] [--keyboard-interactive] [--menu] [--joystick /dev/input/js0]\n--display selects the nested Wayland compositor; --socket selects pokshelld IPC.\n--menu requires --display to prevent menu windows escaping onto KDE.\nRequires Wayland compositor with wlr-layer-shell-v1");
                 return Ok(());
             }
             _ => return Err(format!("unknown argument: {}", arg.to_string_lossy()).into()),
         }
+    }
+    if menu_mode && nested_display.is_none() {
+        return Err("--menu requires --display pokshell-N; refusing to render on the KDE desktop".into());
     }
     if joystick_path.is_some() && !menu_mode {
         return Err("--joystick requires --menu".into());
@@ -441,7 +487,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let visible = Arc::new(AtomicBool::new(force_visible));
     if !force_visible { subscribe(socket.clone(), Arc::clone(&visible)); }
 
-    let conn = Connection::connect_to_env()?;
+    let conn = if let Some(name) = nested_display.as_deref() {
+        nested_connection(name)?
+    } else {
+        // Backwards-compatible diagnostic Layer Shell probe, not a game menu.
+        Connection::connect_to_env()?
+    };
     let (globals, mut queue) = registry_queue_init::<App>(&conn)?;
     let qh = queue.handle();
     let compositor: wl_compositor::WlCompositor = globals.bind(&qh, 4..=4, ())?;
@@ -492,6 +543,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rejects_host_wayland_and_path_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["wayland-0", "wayland-1", "../pokshell-1", "pokshell-", "/tmp/evil",
+            "pokshell-a/b", "pokshell-!"] {
+            assert!(validate_nested_display(dir.path(), name).is_err(), "{name}");
+        }
+        assert!(validate_nested_display(Path::new("relative-runtime"), "pokshell-1").is_err());
+    }
+
+    #[test]
+    fn validates_real_socket_and_rejects_regular_files_and_symlinks() {
+        use std::os::unix::net::UnixListener;
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("pokshell-test");
+        let _listener = UnixListener::bind(&endpoint).unwrap();
+        assert_eq!(validate_nested_display(dir.path(), "pokshell-test").unwrap(), endpoint);
+        std::fs::write(dir.path().join("pokshell-file"), "not a socket").unwrap();
+        assert!(validate_nested_display(dir.path(), "pokshell-file").is_err());
+        std::os::unix::fs::symlink(&endpoint, dir.path().join("pokshell-link")).unwrap();
+        assert!(validate_nested_display(dir.path(), "pokshell-link").is_err());
+        assert!(validate_nested_display(dir.path(), "pokshell-missing").is_err());
+    }
+
     #[test]
     fn opaque_panel_and_fully_transparent_idle_surface() {
         let transparent = paint(32, 64, false);

@@ -277,8 +277,10 @@ impl WlrLayerShellHandler for PokCompositor {
         _surface: LayerSurface,
         _output: Option<WlOutput>,
         _layer: Layer,
-        _namespace: String,
+        namespace: String,
     ) {
+        // Only this actual Smithay server can confirm it received the layer.
+        eprintln!("pokcomp: new layer_surface namespace={namespace}");
         // The initial wl_surface.commit triggers the Configure handshake.
     }
 }
