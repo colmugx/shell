@@ -106,13 +106,16 @@ with tempfile.TemporaryDirectory(prefix="pokcomp-nested-") as dirname:
         )
         assert compositor.poll() is None
         layer_env = {**nested_env, "WAYLAND_DISPLAY": "pokshell-test"}
-        sdl_mode = "--sdl2" in sys.argv
+        fullscreen_mode = "--sdl2-fullscreen" in sys.argv
+        sdl_mode = "--sdl2" in sys.argv or fullscreen_mode
         if sdl_mode:
             game_command = [
                 "../../rust/target/debug/pokshelld",
                 "--game", sys.executable,
                 "--game-arg", "tests/sdl2_client.py",
             ]
+            if fullscreen_mode:
+                game_command.extend(["--game-arg", "--fullscreen"])
         else:
             game_command = [
                 "../../rust/target/debug/pokshelld",
@@ -164,6 +167,14 @@ with tempfile.TemporaryDirectory(prefix="pokcomp-nested-") as dirname:
             assert proof["socket"] == "pokshell-test", proof
             assert proof["x11"] is None, proof
             assert proof["video"] == "wayland", proof
+            assert proof["fullscreen_requested"] == fullscreen_mode, proof
+            if fullscreen_mode:
+                wait_for(
+                    lambda: "pokcomp: xdg fullscreen size=" in
+                    comp_log.read_text(errors="replace"),
+                    compositor, comp_log, "XDG fullscreen configure",
+                )
+                assert proof["window_size"][0] > 0 and proof["window_size"][1] > 0, proof
         wait_for(
             lambda: "pokcomp: game render elements present" in comp_log.read_text(errors="replace"),
             compositor, comp_log, "nested game render elements",

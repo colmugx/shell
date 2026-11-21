@@ -132,3 +132,24 @@ pointer/controller focus, or a DRM/KMS-native shell.
 
 Smithay minimal example attribution and MIT notice:
 [`rust/compositor/THIRD_PARTY_NOTICES.md`](../rust/compositor/THIRD_PARTY_NOTICES.md).
+
+
+## Nested XDG fullscreen and output resize
+
+The nested compositor's game-first XDG policy initially configures
+new game toplevels as **Maximized** at the current host window extent.
+When an XDG client requests fullscreen, it receives `Fullscreen` plus
+a configure size matching the nested output. `unset_fullscreen` restores
+maximized, and `unset_maximized` returns a normal unconstrained XDG
+size. Resizing the host window sends a new configure to any mapped
+maximized/fullscreen toplevel as well as the diagnostic layer.
+
+`rust/compositor/tests/headless_nested.py --sdl2-fullscreen` launches a
+real SDL2 client that calls `SDL_SetWindowFullscreen`, verifies Smithay
+handled the XDG fullscreen request, and repeats game/overlay lifecycle
+checks. This is **nested output fullscreen**, not the outer KDE window
+entering fullscreen or DRM/KMS mode switching.
+
+The current game-first policy remains a one-output single-game prototype.
+It does not implement client-requested output selection, multiple windows
+placement, popup constraints or multiple monitor geometry.

@@ -2,7 +2,7 @@
 //! Experimental *nested* Smithay Wayland compositor.
 //!
 //! Protocol/renderer design adapted from Smithay's MIT-licensed minimal.rs
-//! example; see THIRD_PARTY_NOTICES.md. No DRM/KMS or layer-shell support yet.
+//! example; see THIRD_PARTY_NOTICES.md. No DRM/KMS or gamepad input yet.
 
 use std::error::Error;
 use std::os::unix::io::OwnedFd;
@@ -100,6 +100,39 @@ struct PokCompositor {
 }
 
 impl PokCompositor {
+    /// The nested host window is pokshell's single output. Wayland XDG
+    /// configure sizes are logical pixels (scale 1 in this prototype).
+    fn output_extent(&self) -> smithay::utils::Size<i32, Logical> {
+        self.output.current_mode()
+            .map(|mode| mode.size.to_logical(1))
+            .unwrap_or((1280, 720).into())
+    }
+
+    /// Send an output-sized configure to a fullscreen/maximized surface.
+    /// State *and* size must be updated together so SDL does not render
+    /// a small top-left texture after fullscreen requests or host resizes.
+    fn configure_fullscreen(&self, surface: &ToplevelSurface, fullscreen: bool) {
+        let extent = self.output_extent();
+        surface.with_pending_state(|pending| {
+            pending.size = Some(extent);
+            pending.bounds = Some(extent);
+            if fullscreen {
+                pending.states.set(xdg_toplevel::State::Fullscreen);
+                pending.states.unset(xdg_toplevel::State::Maximized);
+            } else {
+                pending.states.set(xdg_toplevel::State::Maximized);
+                pending.states.unset(xdg_toplevel::State::Fullscreen);
+            }
+            pending.states.set(xdg_toplevel::State::Activated);
+        });
+        surface.send_pending_configure();
+        eprintln!(
+            "pokcomp: xdg {} size={}x{}",
+            if fullscreen { "fullscreen" } else { "maximized" },
+            extent.w, extent.h
+        );
+    }
+
     /// Hit testing uses the surfaces' *actual input regions*. In particular,
     /// the diagnostic overlay has an empty input region and is click-through.
     fn surface_under(
@@ -135,10 +168,44 @@ impl XdgShellHandler for PokCompositor {
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         eprintln!("pokcomp: new xdg_toplevel");
-        surface.with_pending_state(|state| {
-            state.states.set(xdg_toplevel::State::Activated);
+        // The game-first nested session initially fills its sole output.
+        // This is XDG maximized (not DRM/KMS or host desktop fullscreen).
+        let extent = self.output_extent();
+        surface.with_pending_state(|pending| {
+            pending.size = Some(extent);
+            pending.bounds = Some(extent);
+            pending.states.set(xdg_toplevel::State::Maximized);
+            pending.states.set(xdg_toplevel::State::Activated);
         });
         surface.send_configure();
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            keyboard.set_focus(self, Some(surface.wl_surface().clone()), SERIAL_COUNTER.next_serial());
+        }
+        eprintln!("pokcomp: xdg initial maximized size={}x{}", extent.w, extent.h);
+    }
+
+    fn fullscreen_request(&mut self, surface: ToplevelSurface, _output: Option<WlOutput>) {
+        self.configure_fullscreen(&surface, true);
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        self.configure_fullscreen(&surface, false);
+    }
+
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        self.configure_fullscreen(&surface, false);
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        let extent = self.output_extent();
+        surface.with_pending_state(|pending| {
+            pending.states.unset(xdg_toplevel::State::Maximized);
+            pending.states.unset(xdg_toplevel::State::Fullscreen);
+            pending.size = None;
+            pending.bounds = Some(extent);
+        });
+        surface.send_pending_configure();
+        eprintln!("pokcomp: xdg restored to normal");
     }
 
     fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {}
@@ -296,6 +363,22 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
                 let mode = Mode { size, refresh: 60_000 };
                 state.output.change_current_state(Some(mode), None, None, None);
                 state.output.set_preferred(mode);
+                for game in state.xdg_shell_state.toplevel_surfaces() {
+                    let previous = game.current_state();
+                    let full = previous.states.contains(xdg_toplevel::State::Fullscreen);
+                    let max = previous.states.contains(xdg_toplevel::State::Maximized);
+                    if full || max {
+                        // A resize must reconfigure mapped XDG game clients
+                        // as well as the diagnostic layer.
+                        let extent = size.to_logical(1);
+                        game.with_pending_state(|pending| {
+                            pending.size = Some(extent);
+                            pending.bounds = Some(extent);
+                        });
+                        game.send_pending_configure();
+                        eprintln!("pokcomp: xdg output resize={}x{}", extent.w, extent.h);
+                    }
+                }
                 for layer in state.layer_shell_state.layer_surfaces().filter(|layer| layer.alive()) {
                     layer.with_pending_state(|pending| {
                         pending.size = Some((DIAGNOSTIC_LAYER_WIDTH, size.h).into());
@@ -328,7 +411,20 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
                 let serial = SERIAL_COUNTER.next_serial();
                 if event.state() == ButtonState::Pressed && !pointer.is_grabbed() {
                     let hit = state.surface_under(state.pointer_position, host_size);
-                    keyboard.set_focus(&mut state, hit.map(|(surface, _)| surface), serial);
+                    // The diagnostic layer explicitly requests
+                    // KeyboardInteractivity::None; a click must not steal
+                    // keyboard control from the running game.
+                    let focused = hit.and_then(|(surface, _)| {
+                        let is_diagnostic_layer = state.layer_shell_state.layer_surfaces()
+                            .any(|layer| layer.alive() && layer.wl_surface() == &surface);
+                        if is_diagnostic_layer {
+                            state.xdg_shell_state.toplevel_surfaces().last()
+                                .map(|game| game.wl_surface().clone())
+                        } else {
+                            Some(surface)
+                        }
+                    });
+                    keyboard.set_focus(&mut state, focused, serial);
                 }
                 pointer.button(&mut state, &ButtonEvent {
                     button: event.button_code(),

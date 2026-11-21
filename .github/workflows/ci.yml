@@ -110,3 +110,6 @@ jobs:
       - name: SDL2 game must use pokcomp Wayland instead of KDE X11
         if: matrix.runner == 'ubuntu-24.04'
         run: python3 tests/headless_nested.py --sdl2
+      - name: SDL2 XDG fullscreen request and game/overlay coexistence
+        if: matrix.runner == 'ubuntu-24.04'
+        run: python3 tests/headless_nested.py --sdl2-fullscreen

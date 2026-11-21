@@ -32,6 +32,12 @@ sdl.SDL_FillRect.restype = ctypes.c_int
 sdl.SDL_UpdateWindowSurface.argtypes = [ctypes.c_void_p]
 sdl.SDL_UpdateWindowSurface.restype = ctypes.c_int
 sdl.SDL_DestroyWindow.argtypes = [ctypes.c_void_p]
+sdl.SDL_SetWindowFullscreen.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+sdl.SDL_SetWindowFullscreen.restype = ctypes.c_int
+sdl.SDL_PumpEvents.argtypes = []
+sdl.SDL_GetWindowSize.argtypes = [
+    ctypes.c_void_p, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)
+]
 sdl.SDL_Quit.restype = None
 
 def check(code, operation):
@@ -51,6 +57,16 @@ try:
             raise RuntimeError("SDL_GetWindowSurface: " + sdl.SDL_GetError().decode())
         check(sdl.SDL_FillRect(surface, None, 0x0055AA66), "SDL_FillRect")
         check(sdl.SDL_UpdateWindowSurface(window), "SDL_UpdateWindowSurface")
+        if "--fullscreen" in sys.argv:
+            # SDL_WINDOW_FULLSCREEN_DESKTOP (a real xdg_toplevel request)
+            check(sdl.SDL_SetWindowFullscreen(window, 0x00001001),
+                  "SDL_SetWindowFullscreen")
+            for _ in range(100):
+                sdl.SDL_PumpEvents()
+                time.sleep(0.01)
+        width = ctypes.c_int()
+        height = ctypes.c_int()
+        sdl.SDL_GetWindowSize(window, ctypes.byref(width), ctypes.byref(height))
         # Written only after SDL actually created and submitted the Wayland
         # window, not merely after opening a socket.
         result_path = os.path.join(os.environ["XDG_RUNTIME_DIR"], "pokshell-sdl-proof.json")
@@ -60,6 +76,8 @@ try:
                 "socket": os.environ.get("WAYLAND_DISPLAY"),
                 "x11": os.environ.get("DISPLAY"),
                 "video": os.environ.get("SDL_VIDEODRIVER"),
+                "fullscreen_requested": "--fullscreen" in sys.argv,
+                "window_size": [width.value, height.value],
             }, output)
         time.sleep(20)
     finally:
