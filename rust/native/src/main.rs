@@ -14,7 +14,8 @@ use smithay::{
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         udev::{UdevBackend, UdevEvent},
         drm::{DrmDevice, DrmDeviceFd},
-        egl::{EGLDevice, EGLDisplay},
+        egl::{EGLContext, EGLDevice, EGLDisplay},
+        renderer::gles::GlesRenderer,
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
     },
     reexports::{
@@ -249,8 +250,15 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
         Err(err) => println!("egl_device_metadata_unavailable={err}"),
     }
     println!("egl_display_initialized=yes");
+    // A real GLES renderer is initialized against this GBM-backed display.
+    // No window-surface or modeset occurs, and CI never opens a DRM card.
+    let context = EGLContext::new(&egl_display)?;
+    // SAFETY: Smithay owns the newly created EGL context for the lifetime
+    // of this renderer; we do not mutate its GL state outside Smithay.
+    let _renderer = unsafe { GlesRenderer::new(context)? };
+    println!("gles_renderer_initialized=yes");
     println!("input_backend=libinput drm_hotplug=udev seat_events=libseat");
-    println!("next_gate=GLES renderer + per-CRTC DrmOutputManager + vblank event loop (not yet wired)");
+    println!("next_gate=GBM scanout buffers + per-CRTC DrmOutputManager + vblank event loop (not yet wired)");
 
     if let Some(seconds) = opts.monitor_seconds {
         install_signals()?;
