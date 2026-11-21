@@ -105,8 +105,10 @@ authorized non-root text TTY (not a Konsole window). Run:
 The opt-in test requires an atomic KMS device with exactly one connector
 and CRTC. Smithay chooses a compatible primary plane/GBM format, renders
 two distinct colors into dma-buf-backed buffers, queues them and consumes
-matching vblank events. It holds the last frame without redraw; exits
-automatically, or on Ctrl+C. On seat loss/hotplug/error it stops instead
+matching vblank events. The blue and green frames are now each held for
+half the requested duration AFTER their respective vblank events; previously
+green immediately replaced blue. No new GPU draw happens during either hold.
+The diagnostic exits automatically, or on Ctrl+C. On seat loss/hotplug/error it stops instead
 of attempting further submissions. Expected logs: kms_buffered_surface_ready,
 kms_first_frame_queued, kms_frame_presented=0, kms_frame_presented=1,
 kms_scanout_test=complete. Confirm the original TTY comes back. If not,
@@ -137,3 +139,15 @@ This is a correctness/efficiency policy, **not a measured battery-life
 result**: idle CPU wakeups, refresh scheduling and real GPU clock behavior
 must still be benchmarked on hardware. Software CI tests the frame
 state-machine, not real-world power consumption or atomic scanout.
+
+
+### UTM KMS scanout user acceptance (2026-11-21)
+
+The user supplied terminal logs confirming `kms_frame_presented=0`,
+`kms_frame_presented=1` and `kms_scanout_test=complete`, plus a green
+scanout photograph on VirtIO GPU / card0 (1280×800, 120 Hz). This establishes
+an **actual UTM/VM KMS framebuffer scanout**, not a physical handheld test
+or native Wayland game rendering. The original immediate blue-to-green swap
+made blue effectively invisible; the diagnostic now holds each color.
+`egl_device_software=true` and absent `EGL_EXT_device_drm` do not invalidate
+the DRM scanout, but do not establish hardware-accelerated GLES performance.

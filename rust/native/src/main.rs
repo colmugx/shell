@@ -8,6 +8,7 @@ mod kms;
 mod seat;
 mod output;
 mod frame;
+mod scanout_demo;
 
 use kms::Candidate;
 use smithay::{
@@ -391,33 +392,42 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
         output::queue(&mut buffered, &mut renderer, mode.size(), 0)?;
         state.gate.configured();
         println!("kms_first_frame_queued=yes");
-        let deadline = Instant::now() + Duration::from_secs(3);
-        let mut acknowledged = 0usize;
-        let mut hold_until = None;
+        let mut demo = scanout_demo::DiagnosticScanout::new(
+            Duration::from_secs(seconds), Instant::now());
+        let (blue, green) = demo.split();
+        println!("kms_color_holds_ms blue={} green={}", blue.as_millis(), green.as_millis());
+        let mut acknowledged = state.vblanks;
         loop {
             if SHUTDOWN.load(Ordering::Acquire) { break; }
-            seat_events.dispatch(Duration::from_millis(100), &mut state)?;
+            seat_events.dispatch(Duration::from_millis(40), &mut state)?;
             if !state.gate.may_submit() || !session.is_active() || state.drm_error {
                 return Err("seat/output changed during scanout; aborting, no further submissions".into());
             }
             if state.vblanks > acknowledged {
                 acknowledged = state.vblanks;
                 if let Some(frame) = buffered.frame_submitted()? {
+                    demo.presented(frame, Instant::now())?;
                     println!("kms_frame_presented={frame}");
                     if frame == 0 {
-                        output::queue(&mut buffered, &mut renderer, mode.size(), 1)?;
+                        println!("kms_color_visible=blue holding_ms={}", blue.as_millis());
                     } else {
-                        hold_until = Some(Instant::now() + Duration::from_secs(seconds));
+                        println!("kms_color_visible=green holding_ms={}", green.as_millis());
                     }
                 }
             }
-            if let Some(until) = hold_until {
-                if Instant::now() >= until { break; }
-            } else if Instant::now() >= deadline {
-                return Err("timed out waiting for two DRM page-flip acknowledgements".into());
+            match demo.step(Instant::now()) {
+                scanout_demo::Step::Wait => {}
+                scanout_demo::Step::QueueSecond => {
+                    output::queue(&mut buffered, &mut renderer, mode.size(), 1)?;
+                    println!("kms_second_frame_queued=yes");
+                }
+                scanout_demo::Step::Complete => break,
+            }
+            if demo.timed_out(Instant::now()) {
+                return Err("timed out waiting for DRM page-flip acknowledgement".into());
             }
         }
-        if hold_until.is_none() { return Err("scanout interrupted before both frames presented".into()); }
+        if !demo.completed() { return Err("scanout interrupted before both colors held".into()); }
         // Smithay owns the surface and swapchain teardown. Drop them while
         // the device is still active, then release the DRM notifier/device
         // with the seat. Hardware restore must be manually verified.
