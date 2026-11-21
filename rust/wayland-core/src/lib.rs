@@ -599,9 +599,11 @@ impl Server {
     /// drawable surface. This avoids replacing the Linux TTY with black.
     pub fn game_has_content(&mut self, renderer: &mut GlesRenderer) -> bool {
         self.state.xdg_shell_state.toplevel_surfaces().iter().any(|surface| {
-            !render_elements_from_surface_tree(
-                renderer, surface.wl_surface(), (0, 0), 1.0, 1.0, Kind::Unspecified,
-            ).is_empty()
+            let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                render_elements_from_surface_tree(
+                    renderer, surface.wl_surface(), (0, 0), 1.0, 1.0, Kind::Unspecified,
+                );
+            !elements.is_empty()
         })
     }
 
