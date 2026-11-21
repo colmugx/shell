@@ -102,6 +102,7 @@ struct App {
     menu_buffers: Vec<wl_buffer::WlBuffer>,
     backing: Option<File>,
     menu: Option<MenuState>,
+    hovered_menu_row: Option<usize>,
     action_tx: Sender<(MenuAction, Result<(), String>)>,
     action_rx: Receiver<(MenuAction, Result<(), String>)>,
     action_pending: bool,
@@ -187,10 +188,10 @@ impl App {
 
     fn poll_action(&mut self) {
         while let Ok((action, result)) = self.action_rx.try_recv() {
+            self.action_pending = false;
             match result {
                 Ok(()) => eprintln!("pokshell-layer menu completed action={}", action.label()),
                 Err(err) => {
-                    self.action_pending = false; // Allow an explicit retry.
                     eprintln!("pokshell-layer menu failed action={}: {err}", action.label());
                 }
             }
@@ -299,6 +300,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for App {
             | wl_pointer::Event::Motion { surface_x, surface_y, .. } => {
                 if state.drawn.map(|x| x.0) == Some(true) {
                     if let Some(menu) = &mut state.menu {
+                        state.hovered_menu_row = menu::hit_test(surface_x, surface_y);
                         menu.pointer(surface_x, surface_y);
                     }
                 }
@@ -308,11 +310,14 @@ impl Dispatch<wl_pointer::WlPointer, ()> for App {
                 state: wayland_client::WEnum::Value(wl_pointer::ButtonState::Pressed), ..
             } if state.interactive && state.drawn.map(|x| x.0) == Some(true) => {
                 if let Some(menu) = &state.menu {
-                    state.request_menu_action(menu.current(), "pointer");
+                    if state.hovered_menu_row.is_some() {
+                        state.request_menu_action(menu.current(), "pointer");
+                    }
                 } else {
                     state.request_overlay_close("pointer");
                 }
             }
+            wl_pointer::Event::Leave { .. } => state.hovered_menu_row = None,
             _ => {}
         }
     }
@@ -425,7 +430,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         surface, layer, compositor, _seat: seat, pointer: None, keyboard: None,
         interactive, keyboard_interactive, control_socket: socket,
         shm, pool: None, empty: None, panel: None, menu_buffers: Vec::new(),
-        backing: None, menu: menu_mode.then(MenuState::default),
+        backing: None, menu: menu_mode.then(MenuState::default), hovered_menu_row: None,
         action_tx, action_rx, action_pending: false,
         configured: false, closed: false, width: PANEL_WIDTH, height: 720, drawn: None,
     };
