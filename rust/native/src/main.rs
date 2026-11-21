@@ -365,6 +365,7 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
             let mut pump = frame::FramePump::default();
             let mut observed = state.vblanks;
             let startup_deadline = Instant::now() + Duration::from_secs(30);
+            let mut next_startup_report = Instant::now() + Duration::from_secs(3);
             eprintln!("poknative: waiting up to 30s for first game frame; Ctrl+Alt+Backspace exits");
             loop {
                 if SHUTDOWN.load(Ordering::Acquire) { break; }
@@ -387,9 +388,16 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
                 // A blank KMS commit hides the terminal before any client
                 // can render. Never submit it as the first frame.
                 if !pump.has_submitted() && !server.game_has_content(&mut renderer) {
+                    if Instant::now() >= next_startup_report {
+                        let (xdg, layers, imports) = server.client_counts();
+                        eprintln!("poknative: waiting_for_game_surface accepted_clients={} xdg_toplevels={xdg} layer_surfaces={layers} pending_dmabufs={imports}",
+                            server.accepted_clients());
+                        next_startup_report = Instant::now() + Duration::from_secs(3);
+                    }
                     if Instant::now() >= startup_deadline {
                         let (xdg, layers, imports) = server.client_counts();
-                        eprintln!("poknative: first_frame_timeout xdg_toplevels={xdg} layer_surfaces={layers} pending_dmabufs={imports}");
+                        eprintln!("poknative: first_frame_timeout accepted_clients={} xdg_toplevels={xdg} layer_surfaces={layers} pending_dmabufs={imports}",
+                            server.accepted_clients());
                         return Err("no renderable game surface after 30s; leaving the TTY visible".into());
                     }
                     seat_events.dispatch(Duration::from_millis(50), &mut state)?;

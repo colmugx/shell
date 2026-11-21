@@ -234,3 +234,34 @@ and triggers owned-process shutdown rather than an unexpected-exit error.
 
 This is a **diagnostic and lifecycle fix**. Full native game rendering remains
 unverified; do not claim EGL root-cause resolution without the new game logs.
+
+
+### 2026-11-21 native SuperTux first-frame incident: protocol-stage evidence
+
+From UTM logs, SuperTux2 remains alive (`game_started pid=2765`,
+`STATUS mode=game`) but **no XDG toplevel is created and no native
+frame is submitted**. DRM/KMS, GLES, layer-shell and the emergency
+Ctrl+Alt+Backspace have worked. Layer BrokenPipe is a **shutdown race**,
+not proof of the initial rendering failure.
+
+The Wayland server now logs each accepted client connection and the native
+backend reports `accepted_clients`, `xdg_toplevels`, `layer_surfaces`
+and `pending_dmabufs` every 3 seconds until a drawable game appears.
+This distinguishes game never contacting the display, connecting but not
+creating an XDG role, and stalled DMA-BUF importing. Native supervisor
+waits briefly for a clean compositor exit after the layer loses its Wayland
+connection; a real layer crash while the compositor remains active still
+fails the session instead of being suppressed.
+
+**Renderer-isolation test:** Debian SuperTux 0.6.3 supports
+`--renderer sdl`. On UTM's reported software EGL backend, first test
+its SDL renderer through the same native Wayland transport:
+```sh
+./rust/target/debug/poksession --native --card /dev/dri/card0 \\
+  --game /usr/games/supertux2 \\
+  --game-arg --renderer --game-arg sdl \\
+  > "$HOME/pokshell-native.log" 2>&1
+```
+This is a fallback *for this specific game* and a diagnostic separation
+between SuperTux's OpenGL backend and the system compositor; it is not a
+permanent forced software mode for native Vulkan/OpenGL games.

@@ -317,6 +317,7 @@ struct ClientState {
     compositor_state: CompositorClientState,
     disconnected: Arc<std::sync::atomic::AtomicBool>,
     dmabuf_enabled: bool,
+    accepted_clients: u64,
 }
 impl ClientData for ClientState {
     fn initialized(&self, _id: ClientId) {}
@@ -550,7 +551,7 @@ impl Server {
         };
         Ok(Self { display, listener, state, start: Instant::now(),
             disconnected: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            dmabuf_enabled: false })
+            dmabuf_enabled: false, accepted_clients: 0 })
     }
 
     /// Register a dma-buf global only after the backend's renderer is ready.
@@ -597,6 +598,8 @@ impl Server {
 
     /// Do not modeset an empty initial output until a game has presented a
     /// drawable surface. This avoids replacing the Linux TTY with black.
+    pub fn accepted_clients(&self) -> u64 { self.accepted_clients }
+
     pub fn client_counts(&self) -> (usize, usize, usize) {
         (self.state.xdg_shell_state.toplevel_surfaces().len(),
          self.state.layer_shell_state.layer_surfaces().filter(|layer| layer.alive()).count(),
@@ -624,6 +627,8 @@ impl Server {
             self.display.handle().insert_client(stream, Arc::new(ClientState {
                 disconnected: self.disconnected.clone(), ..Default::default()
             }))?;
+            self.accepted_clients += 1;
+            eprintln!("pokshell: accepted Wayland client connection total={}", self.accepted_clients);
         }
         self.display.dispatch_clients(&mut self.state)?;
         if self.disconnected.swap(false, std::sync::atomic::Ordering::AcqRel) {

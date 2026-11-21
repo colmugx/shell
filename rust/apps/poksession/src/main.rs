@@ -329,6 +329,7 @@ fn session(opts: Options) -> io::Result<()> {
         println!("Use rust/target/debug/pokctl OVERLAY OPEN to show the menu; Ctrl+C stops owned services.");
         let startup_deadline = Instant::now() + Duration::from_secs(30);
         let mut next_status = Instant::now();
+        let mut failed_layer_since: Option<Instant> = None;
 
         loop {
             if SHUTDOWN.load(Ordering::Acquire) { break; }
@@ -344,7 +345,24 @@ fn session(opts: Options) -> io::Result<()> {
             }
             if let Some(client) = layer.as_mut() {
                 if let Some(status) = client.try_wait()? {
-                    return Err(io::Error::other(format!("pokshell-layer exited unexpectedly: {status}")));
+                    if opts.native {
+                        // The compositor handles Ctrl+Alt+Backspace, closes
+                        // Wayland, then exits. A layer BrokenPipe may race
+                        // with that clean exit. Give the compositor a short
+                        // chance to exit instead of reporting the harmless
+                        // downstream error as the primary failure.
+                        eprintln!("pokshell-session: native layer exited ({status}); checking compositor shutdown");
+                        layer = None;
+                        failed_layer_since = Some(Instant::now());
+                    } else {
+                        return Err(io::Error::other(format!("pokshell-layer exited unexpectedly: {status}")));
+                    }
+                }
+            }
+            if let Some(since) = failed_layer_since {
+                if since.elapsed() >= Duration::from_secs(2) {
+                    return Err(io::Error::other(
+                        "native layer exited but compositor remained alive for 2s; see earlier game/Wayland logs"));
                 }
             }
             if let Some(process) = daemon.as_mut() {
@@ -354,7 +372,8 @@ fn session(opts: Options) -> io::Result<()> {
                     daemon = None;
                 }
             }
-            if opts.native && Instant::now() < startup_deadline
+            if opts.native && failed_layer_since.is_none()
+                && Instant::now() < startup_deadline
                 && Instant::now() >= next_status
             {
                 if daemon.is_none() {
