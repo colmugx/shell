@@ -15,12 +15,10 @@ backend. The C framebuffer prototype is not the target graphics stack.
   libseat for a seat-owned DRM file descriptor, kernel KMS resource enumeration,
   a compatible connector/encoder/CRTC route, GBM + EGL + GLES renderer initialization,
   udev DRM hotplug monitoring, libinput event collection and libseat
-  suspend/resume handling. **No DRM modeset, scanout or native Wayland
-  presentation is attached yet**. It refuses to run inside KDE by default. It is intended
+  suspend/resume handling. **Default probe does not modeset; opt-in bounded scanout test is implemented, native Wayland presentation remains pending**. It refuses to run inside KDE by default. It is intended
   for a separate native Linux TTY, not a nested KDE window.
 
-The implementation deliberately leaves KMS plane/CRTC state unchanged until
-mode selection, vt suspend/resume and hardware-specific recovery can be tested.
+The default probe leaves display modes alone. Only the explicitly requested bounded scanout test changes output state; restore must be verified in TTY.
 
 ## UTM diagnostics: first use read-only preflight
 
@@ -88,3 +86,30 @@ This processes libseat activation/pause, udev DRM hotplug, and libinput
 device notifications. Use Ctrl+C to exit. It **does not** capture or
 redirect game input or do modesetting. The monitor is a bounded diagnostic
 used to validate the native Linux device/event stack.
+
+
+## P1-N04: opt-in first two native scanout frames
+
+The user's UTM preflight image (2026-11-21) shows virtio-pci,
+/dev/dri/card0, Virtual-1 connected, 1 CRTC, 1 encoder and
+native_kms_candidate=yes, with 1280x800 among the enumerated modes.
+This is read-only preflight evidence, not a successful modeset.
+
+Build the native backend in KDE first; then log out of KDE and use an
+authorized non-root text TTY (not a Konsole window). Run:
+
+```sh
+./rust/native/target/debug/poknative --card /dev/dri/card0 --scanout-seconds 5
+```
+
+The opt-in test requires an atomic KMS device with exactly one connector
+and CRTC. Smithay chooses a compatible primary plane/GBM format, renders
+two distinct colors into dma-buf-backed buffers, queues them and consumes
+matching vblank events. It holds the last frame without redraw; exits
+automatically, or on Ctrl+C. On seat loss/hotplug/error it stops instead
+of attempting further submissions. Expected logs: kms_buffered_surface_ready,
+kms_first_frame_queued, kms_frame_presented=0, kms_frame_presented=1,
+kms_scanout_test=complete. Confirm the original TTY comes back. If not,
+switch VT or restart the graphical session; record the failure rather than
+claiming successful restore. Do not run as root or inside KDE.
+This is not a native Wayland game session yet.

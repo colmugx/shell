@@ -13,6 +13,8 @@ pub struct Candidate {
     pub height: u16,
     pub refresh_hz: u32,
     pub currently_routed: bool,
+    pub current_mode: bool,
+    pub preferred: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,7 +26,7 @@ pub enum RouteError {
 /// Single-output selection policy. In a later multi-output policy these
 /// candidates feed a matcher that prevents two outputs claiming one CRTC.
 /// Prefer keeping a valid existing kernel route (less disruption) and then
-/// prefer resolution/refresh. Stable indices break ties deterministically.
+/// prefer the current mode, then the kernel preferred mode, then resolution/refresh. Stable indices break ties deterministically.
 pub fn choose(candidates: &[Candidate], connected_with_modes: bool) -> Result<usize, RouteError> {
     if !connected_with_modes {
         return Err(RouteError::NoConnectedOutput);
@@ -34,6 +36,8 @@ pub fn choose(candidates: &[Candidate], connected_with_modes: bool) -> Result<us
     }
     Ok(candidates.iter().enumerate().max_by_key(|(_, c)| (
         u8::from(c.currently_routed),
+        u8::from(c.currently_routed && c.current_mode),
+        u8::from(c.preferred),
         u32::from(c.width) * u32::from(c.height),
         c.refresh_hz,
         usize::MAX - c.connector,
@@ -49,7 +53,7 @@ mod tests {
     fn c(connector: usize, encoder: usize, crtc: usize, width: u16, height: u16,
          current: bool) -> Candidate {
         Candidate { connector, encoder, crtc, mode: 0, width, height,
-            refresh_hz: 60, currently_routed: current }
+            refresh_hz: 60, currently_routed: current, current_mode: false, preferred: false }
     }
 
     #[test]
@@ -64,6 +68,15 @@ mod tests {
             c(1, 1, 0, 3840, 2160, false),
         ];
         assert_eq!(choose(&list, true), Ok(0));
+    }
+    #[test]
+    fn preferred_and_current_modes_beat_oversized_modes() {
+        let mut list = vec![c(0, 0, 0, 5120, 2160, true), c(0, 0, 0, 1280, 800, true),
+            c(0, 0, 0, 1920, 1080, true)];
+        list[1].preferred = true;
+        assert_eq!(choose(&list, true), Ok(1));
+        list[2].current_mode = true;
+        assert_eq!(choose(&list, true), Ok(2));
     }
     #[test]
     fn selects_best_resolution_and_then_refresh_on_fresh_boot() {

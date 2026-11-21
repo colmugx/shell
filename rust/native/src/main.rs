@@ -6,6 +6,7 @@
 
 mod kms;
 mod seat;
+mod output;
 
 use kms::Candidate;
 use smithay::{
@@ -14,7 +15,7 @@ use smithay::{
         input::InputEvent,
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         udev::{UdevBackend, UdevEvent},
-        drm::{DrmDevice, DrmDeviceFd},
+        drm::{DrmDevice, DrmDeviceFd, DrmEvent},
         egl::{EGLContext, EGLDevice, EGLDisplay},
         renderer::gles::GlesRenderer,
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
@@ -22,7 +23,7 @@ use smithay::{
     reexports::{
         calloop::EventLoop,
         input::Libinput,
-        drm::control::{connector, Device as DrmControlDevice},
+        drm::control::{connector, Device as DrmControlDevice, ModeTypeFlags},
         rustix::fs::OFlags,
     },
     utils::DeviceFd,
@@ -56,12 +57,16 @@ struct MonitorState {
     gate: seat::Gate,
     device_events: usize,
     input_events: usize,
+    drm: Option<DrmDevice>,
+    vblanks: usize,
+    drm_error: bool,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Options {
     card: Option<PathBuf>,
     monitor_seconds: Option<u64>,
+    scanout_seconds: Option<u64>,
 }
 
 fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, String> {
@@ -80,9 +85,19 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, St
                 }
                 opts.monitor_seconds = Some(value);
             },
+            Some("--scanout-seconds") if opts.scanout_seconds.is_none() => {
+                let value = args.next().ok_or("--scanout-seconds requires 1..=15")?
+                    .to_str().ok_or("--scanout-seconds must be decimal")?.parse::<u64>()
+                    .map_err(|_| "--scanout-seconds must be decimal")?;
+                if !(1..=15).contains(&value) { return Err("--scanout-seconds must be in 1..=15".into()); }
+                opts.scanout_seconds = Some(value);
+            },
             Some("--help") | Some("-h") => return Ok(None),
             _ => return Err(format!("unknown/duplicate argument: {}", arg.to_string_lossy())),
         }
+    }
+    if opts.scanout_seconds.is_some() && opts.monitor_seconds.is_some() {
+        return Err("--scanout-seconds and --monitor-seconds are mutually exclusive".into());
     }
     Ok(Some(opts))
 }
@@ -123,6 +138,7 @@ fn check_session() -> Result<(), String> {
 
 fn run(opts: Options) -> Result<(), Box<dyn Error>> {
     check_session()?;
+    install_signals()?;
     let card = opts.card.unwrap_or_else(|| PathBuf::from("/dev/dri/card0"));
     validate_card(&card)?;
     let meta = fs::symlink_metadata(&card)?;
@@ -163,6 +179,7 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
             }
             SessionEvent::PauseSession => {
                 state.gate.pause();
+                if let Some(drm) = state.drm.as_mut() { drm.pause(); }
                 libinput.suspend();
                 eprintln!("poknative: seat paused (device rendering forbidden)");
             }
@@ -193,7 +210,7 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
     let fd = session.open(&card, OFlags::RDWR | OFlags::CLOEXEC)?;
     let drm_fd = DrmDeviceFd::new(DeviceFd::from(fd));
     // false avoids resetting/disabling already-configured connectors.
-    let (drm, _drm_notifier) = DrmDevice::new(drm_fd.clone(), false)?;
+    let (mut drm, drm_notifier) = DrmDevice::new(drm_fd.clone(), false)?;
     let resources = drm.resource_handles()?;
     println!("kms_crtcs={} kms_connectors={} kms_encoders={}",
         resources.crtcs().len(), resources.connectors().len(), resources.encoders().len());
@@ -202,6 +219,7 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
     // Route ranking is separated from IO and covered by deterministic tests.
     // No DRM master, atomic commit or modeset happens here.
     let mut routes = Vec::new();
+    let mut modes = Vec::new();
     let mut connected_with_modes = false;
     for (conn_idx, connector) in resources.connectors().iter().enumerate() {
         let info = drm.get_connector(*connector, false)?;
@@ -217,6 +235,7 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
             let compatible = resources.filter_crtcs(enc.possible_crtcs());
             for (crtc_idx, crtc) in resources.crtcs().iter().enumerate() {
                 if !compatible.contains(crtc) { continue; }
+                let current = drm.get_crtc(*crtc)?.mode();
                 for (mode_idx, mode) in info.modes().iter().enumerate() {
                     let (width, height) = mode.size();
                     routes.push(Candidate {
@@ -224,8 +243,11 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
                         crtc: crtc_idx, mode: mode_idx,
                         width, height,
                         refresh_hz: mode.vrefresh(),
-                        currently_routed: enc.crtc() == Some(*crtc),
+                        currently_routed: info.current_encoder() == Some(*encoder) && enc.crtc() == Some(*crtc),
+                        current_mode: current.as_ref().is_some_and(|m| m == mode),
+                        preferred: mode.mode_type().contains(ModeTypeFlags::PREFERRED),
                     });
+                    modes.push(*mode);
                 }
             }
         }
@@ -236,7 +258,7 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
     let connector = resources.connectors()[route.connector];
     let encoder = resources.encoders()[route.encoder];
     let crtc = resources.crtcs()[route.crtc];
-    let mode = drm.get_connector(connector, false)?.modes()[route.mode];
+    let mode = modes[selected];
     println!("kms_candidates={} kms_route connector={connector:?} encoder={encoder:?} crtc={crtc:?} mode={:?} refresh_hz={}",
         routes.len(), mode.size(), mode.vrefresh());
     let gbm = GbmDevice::new(drm_fd)?;
@@ -257,16 +279,88 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
     let context = EGLContext::new(&egl_display)?;
     // SAFETY: Smithay owns the newly created EGL context for the lifetime
     // of this renderer; we do not mutate its GL state outside Smithay.
-    let _renderer = unsafe { GlesRenderer::new(context)? };
+    let mut renderer = unsafe { GlesRenderer::new(context)? };
     println!("gles_renderer_initialized=yes");
     // No KMS scanout is configured yet; do NOT call gate.configured()
     // until a real atomic/legacy modeset and buffer ownership are proven.
     println!("kms_submit_permitted={}", state.gate.may_submit());
     println!("input_backend=libinput drm_hotplug=udev seat_events=libseat");
-    println!("next_gate=GBM scanout buffers + per-CRTC DrmOutputManager + vblank event loop (not yet wired)");
+    if let Some(seconds) = opts.scanout_seconds {
+        if !drm.is_atomic() { return Err("scanout test requires atomic KMS".into()); }
+        // The bounded test is deliberately single-output. Never disable or
+        // remap other connected displays in this first hardware experiment.
+        if resources.crtcs().len() != 1 || resources.connectors().len() != 1 {
+            return Err("scanout test currently requires exactly one CRTC and connector".into());
+        }
+        seat_events.handle().insert_source(drm_notifier, move |event, meta, state| {
+            match event {
+                DrmEvent::VBlank(handle) if handle == crtc => {
+                    state.vblanks += 1;
+                    eprintln!("poknative: vblank={} metadata={meta:?}", state.vblanks);
+                }
+                DrmEvent::Error(err) => { state.drm_error = true; eprintln!("poknative: DRM event error={err}"); }
+                _ => {}
+            }
+        })?;
+        // Capture pending seat/hotplug events before claiming a plane.
+        state.drm = Some(drm);
+        seat_events.dispatch(Duration::ZERO, &mut state)?;
+        if !state.gate.active() || !session.is_active() || SHUTDOWN.load(Ordering::Acquire) {
+            return Err("seat inactive or interrupted before scanout setup".into());
+        }
+        let generation = state.gate.generation();
+        let drm = state.drm.as_mut().expect("installed DRM device");
+        let surface = drm.create_surface(crtc, mode, &[connector])?;
+        let mut buffered = output::create(surface, gbm.clone(), &renderer)?;
+        println!("kms_buffered_surface_ready=yes plane={:?}", buffered.plane());
+        seat_events.dispatch(Duration::ZERO, &mut state)?;
+        if !state.gate.active() || !session.is_active()
+            || state.gate.generation() != generation || state.drm_error
+            || SHUTDOWN.load(Ordering::Acquire) {
+            return Err("seat/output changed before first scanout".into());
+        }
+        // queue_buffer performs the first modeset/commit; the swapchain
+        // keeps framebuffer ownership until its matching vblank.
+        output::queue(&mut buffered, &mut renderer, mode.size(), 0)?;
+        state.gate.configured();
+        println!("kms_first_frame_queued=yes");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut acknowledged = 0usize;
+        let mut hold_until = None;
+        loop {
+            if SHUTDOWN.load(Ordering::Acquire) { break; }
+            seat_events.dispatch(Duration::from_millis(100), &mut state)?;
+            if !state.gate.may_submit() || !session.is_active() || state.drm_error {
+                return Err("seat/output changed during scanout; aborting, no further submissions".into());
+            }
+            if state.vblanks > acknowledged {
+                acknowledged = state.vblanks;
+                if let Some(frame) = buffered.frame_submitted()? {
+                    println!("kms_frame_presented={frame}");
+                    if frame == 0 {
+                        output::queue(&mut buffered, &mut renderer, mode.size(), 1)?;
+                    } else {
+                        hold_until = Some(Instant::now() + Duration::from_secs(seconds));
+                    }
+                }
+            }
+            if let Some(until) = hold_until {
+                if Instant::now() >= until { break; }
+            } else if Instant::now() >= deadline {
+                return Err("timed out waiting for two DRM page-flip acknowledgements".into());
+            }
+        }
+        if hold_until.is_none() { return Err("scanout interrupted before both frames presented".into()); }
+        // Smithay owns the surface and swapchain teardown. Drop them while
+        // the device is still active, then release the DRM notifier/device
+        // with the seat. Hardware restore must be manually verified.
+        drop(buffered);
+        println!("kms_scanout_test=complete");
+        return Ok(());
+    }
+    println!("next_gate=--scanout-seconds 5 on an authorized TTY (atomic first frame test)");
 
     if let Some(seconds) = opts.monitor_seconds {
-        install_signals()?;
         let until = Instant::now() + Duration::from_secs(seconds);
         println!("native_monitoring={}s (Ctrl+C to exit)", seconds);
         while Instant::now() < until && !SHUTDOWN.load(Ordering::Acquire) {
@@ -288,7 +382,7 @@ fn main() {
     let opts = match parse(env::args_os().skip(1)) {
         Ok(Some(opts)) => opts,
         Ok(None) => {
-            println!("poknative [--card /dev/dri/card0] [--monitor-seconds 1..3600]\nNative libseat + DRM/GBM/udev/libinput initialization on a Linux TTY.\nDoes not modeset or display game frames. Do not run inside KDE.");
+            println!("poknative [--card /dev/dri/card0] [--monitor-seconds 1..3600 | --scanout-seconds 1..15]\nNative libseat + DRM/GBM/udev/libinput initialization on a Linux TTY.\nDefault: no modeset. Explicit scanout test: two diagnostic frames, then exits. Do not run inside KDE.");
             return;
         }
         Err(err) => { eprintln!("poknative: {err}"); std::process::exit(2); }
@@ -318,6 +412,10 @@ mod tests {
     fn parses_without_probing_hardware() {
         assert!(opts(&["--help"]).unwrap().is_none());
         assert!(opts(&["--unknown"]).is_err());
+        assert!(opts(&["--scanout-seconds", "0"]).is_err());
+        assert!(opts(&["--scanout-seconds", "16"]).is_err());
+        assert!(opts(&["--scanout-seconds", "5", "--monitor-seconds", "1"]).is_err());
+        assert_eq!(opts(&["--scanout-seconds", "5"]).unwrap().unwrap().scanout_seconds, Some(5));
         assert!(opts(&["--monitor-seconds", "0"]).is_err());
         assert!(opts(&["--monitor-seconds", "3601"]).is_err());
         assert_eq!(opts(&["--monitor-seconds", "5"]).unwrap().unwrap().monitor_seconds, Some(5));
