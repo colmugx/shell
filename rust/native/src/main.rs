@@ -182,7 +182,7 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
                     SHUTDOWN.store(true, Ordering::Release);
                 } else if state.gate.may_submit() {
                     if let Some(server) = state.server.as_mut() {
-                        server.state.input(InputEvent::Keyboard { event });
+                        server.state.input::<LibinputInputBackend>(InputEvent::Keyboard { event });
                     }
                 }
             }
