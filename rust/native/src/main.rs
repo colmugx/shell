@@ -7,11 +7,15 @@
 use smithay::{
     backend::{
         allocator::gbm::GbmDevice,
+        input::InputEvent,
+        libinput::{LibinputInputBackend, LibinputSessionInterface},
+        udev::{UdevBackend, UdevEvent},
         drm::{DrmDevice, DrmDeviceFd},
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
     },
     reexports::{
         calloop::EventLoop,
+        input::Libinput,
         drm::control::Device as DrmControlDevice,
         rustix::fs::OFlags,
     },
@@ -24,10 +28,34 @@ use std::fs;
 use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+extern "C" fn on_signal(_: i32) {
+    SHUTDOWN.store(true, Ordering::Release);
+}
+fn install_signals() -> std::io::Result<()> {
+    unsafe extern "C" { fn signal(number: i32, handler: usize) -> usize; }
+    for signum in [2, 15] {
+        // SAFETY: store-only async-signal-safe signal handler.
+        if unsafe { signal(signum, on_signal as usize) } == usize::MAX {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct MonitorState {
+    active: bool,
+    device_events: usize,
+    input_events: usize,
+}
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Options {
     card: Option<PathBuf>,
+    monitor_seconds: Option<u64>,
 }
 
 fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, String> {
@@ -37,6 +65,15 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, St
         match arg.to_str() {
             Some("--card") if opts.card.is_none() =>
                 opts.card = Some(PathBuf::from(args.next().ok_or("--card requires a device")?)),
+            Some("--monitor-seconds") if opts.monitor_seconds.is_none() => {
+                let value = args.next().ok_or("--monitor-seconds requires 1..=3600")?
+                    .to_str().ok_or("--monitor-seconds must be decimal")?.parse::<u64>()
+                    .map_err(|_| "--monitor-seconds must be decimal")?;
+                if !(1..=3600).contains(&value) {
+                    return Err("--monitor-seconds must be in 1..=3600".into());
+                }
+                opts.monitor_seconds = Some(value);
+            },
             Some("--help") | Some("-h") => return Ok(None),
             _ => return Err(format!("unknown/duplicate argument: {}", arg.to_string_lossy())),
         }
@@ -92,23 +129,52 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
     let (mut session, notifier) = LibSeatSession::new()?;
     // Process libseat activation events. KMS devices must never be
     // accessed before the active seat grant is delivered.
-    let mut seat_events: EventLoop<bool> = EventLoop::try_new()?;
-    seat_events.handle().insert_source(notifier, |event, _, active| {
+    let mut seat_events: EventLoop<MonitorState> = EventLoop::try_new()?;
+    let mut state = MonitorState { active: session.is_active(), ..Default::default() };
+
+    let mut libinput = Libinput::new_with_udev::<LibinputSessionInterface<LibSeatSession>>(
+        session.clone().into());
+    libinput.udev_assign_seat(&session.seat())?;
+    let input_backend = LibinputInputBackend::new(libinput.clone());
+    seat_events.handle().insert_source(input_backend, |event, _, state| {
+        state.input_events += 1;
+        match event {
+            InputEvent::DeviceAdded { .. } => eprintln!("poknative: libinput device added"),
+            InputEvent::DeviceRemoved { .. } => eprintln!("poknative: libinput device removed"),
+            _ => {},
+        }
+    })?;
+    seat_events.handle().insert_source(notifier, move |event, _, state| {
         match event {
             SessionEvent::ActivateSession => {
-                *active = true;
-                eprintln!("poknative: libseat active");
+                state.active = true;
+                if let Err(err) = libinput.resume() {
+                    eprintln!("poknative: libinput resume error={err:?}");
+                }
+                eprintln!("poknative: seat activated");
             }
             SessionEvent::PauseSession => {
-                *active = false;
-                eprintln!("poknative: libseat suspended");
+                state.active = false;
+                libinput.suspend();
+                eprintln!("poknative: seat paused (device rendering forbidden)");
             }
         }
     })?;
-    let mut active = session.is_active();
+
+    let udev = UdevBackend::new(session.seat())?;
+    let known: Vec<_> = udev.device_list().map(|(_, path)| path.to_path_buf()).collect();
+    eprintln!("poknative: udev seat devices={known:?}");
+    seat_events.handle().insert_source(udev, |event, _, state| {
+        state.device_events += 1;
+        match event {
+            UdevEvent::Added { path, .. } => eprintln!("poknative: hotplug added {}", path.display()),
+            UdevEvent::Removed { device_id } => eprintln!("poknative: hotplug removed {device_id}"),
+            UdevEvent::Changed { device_id } => eprintln!("poknative: hotplug changed {device_id}"),
+        }
+    })?;
     let deadline = Instant::now() + Duration::from_secs(5);
     while !session.is_active() && Instant::now() < deadline {
-        seat_events.dispatch(Duration::from_millis(100), &mut active)?;
+        seat_events.dispatch(Duration::from_millis(100), &mut state)?;
     }
     if !session.is_active() {
         return Err("libseat did not activate the session within 5 seconds".into());
@@ -135,7 +201,23 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
     }
     let _gbm = GbmDevice::new(drm_fd)?;
     println!("gbm_initialized=yes");
+    println!("input_backend=libinput drm_hotplug=udev seat_events=libseat");
     println!("next_gate=EGL renderer + per-CRTC DrmOutputManager + vblank event loop (not yet wired)");
+
+    if let Some(seconds) = opts.monitor_seconds {
+        install_signals()?;
+        let until = Instant::now() + Duration::from_secs(seconds);
+        println!("native_monitoring={}s (Ctrl+C to exit)", seconds);
+        while Instant::now() < until && !SHUTDOWN.load(Ordering::Acquire) {
+            seat_events.dispatch(Duration::from_millis(200), &mut state)?;
+            if !state.active {
+                // A native renderer must avoid submitting to KMS while
+                // the seat is paused. This probe does not render.
+            }
+        }
+        println!("native_events drm_hotplug={} input_events={} seat_active={}",
+            state.device_events, state.input_events, state.active);
+    }
     // Drop compositor resources before libseat session; do not modify
     // planes or modes, and do not interfere with KWin.
     Ok(())
@@ -145,7 +227,7 @@ fn main() {
     let opts = match parse(env::args_os().skip(1)) {
         Ok(Some(opts)) => opts,
         Ok(None) => {
-            println!("poknative [--card /dev/dri/card0]\nNative libseat + KMS/GBM initialization on a Linux TTY.\nDoes not modeset or display game frames. Do not run inside KDE.");
+            println!("poknative [--card /dev/dri/card0] [--monitor-seconds 1..3600]\nNative libseat + DRM/GBM/udev/libinput initialization on a Linux TTY.\nDoes not modeset or display game frames. Do not run inside KDE.");
             return;
         }
         Err(err) => { eprintln!("poknative: {err}"); std::process::exit(2); }
@@ -175,6 +257,9 @@ mod tests {
     fn parses_without_probing_hardware() {
         assert!(opts(&["--help"]).unwrap().is_none());
         assert!(opts(&["--unknown"]).is_err());
+        assert!(opts(&["--monitor-seconds", "0"]).is_err());
+        assert!(opts(&["--monitor-seconds", "3601"]).is_err());
+        assert_eq!(opts(&["--monitor-seconds", "5"]).unwrap().unwrap().monitor_seconds, Some(5));
         assert!(opts(&["--card"]).is_err());
         assert!(opts(&["--card", "/dev/dri/card0", "--card", "/dev/dri/card1"]).is_err());
         assert_eq!(opts(&["--card", "/dev/dri/card2"]).unwrap().unwrap().card,

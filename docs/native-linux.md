@@ -13,7 +13,8 @@ backend. The C framebuffer prototype is not the target graphics stack.
   Safe to run from regular KDE Wayland Konsole; never requests DRM master.
 - `rust/native` (`poknative`): **separate Smithay backend bring-up** using
   libseat for a seat-owned DRM file descriptor, kernel KMS resource enumeration,
-  and GBM device initialization. **No DRM modeset, buffers or Wayland compositor
+  and GBM device initialization, udev DRM hotplug monitoring, libinput device-event
+collection and libseat suspend/resume handling. **No DRM modeset, buffers or Wayland compositor
   are attached yet**. It refuses to run inside KDE by default. It is intended
   for a separate native Linux TTY, not a nested KDE window.
 
@@ -64,3 +65,16 @@ ownership. Those are separate runtime acceptance gates.
 3. Move the existing Smithay XDG/layer-shell rendering core to the native
    backend without duplicating game/session IPC.
 4. Libinput routing, multiple outputs and suspend/resume.
+
+### Seat events and device hotplug
+
+Run from an authorized Linux TTY (never from KDE):
+
+```sh
+./rust/native/target/debug/poknative --card /dev/dri/card0 --monitor-seconds 30
+```
+
+This processes libseat activation/pause, udev DRM hotplug, and libinput
+device notifications. Use Ctrl+C to exit. It **does not** capture or
+redirect game input or do modesetting. The monitor is a bounded diagnostic
+used to validate the native Linux device/event stack.
