@@ -136,9 +136,13 @@ with tempfile.TemporaryDirectory(prefix="pokcomp-nested-") as dirname:
         )
 
         # Subscribe to actual game/overlay state. Never force --show.
+        menu_mode = "--menu" in sys.argv
+        layer_args = ["../../graphics/wayland-layer/target/debug/pokshell-layer",
+                      "--menu" if menu_mode else "--interactive"]
+        if not menu_mode:
+            layer_args.append("--keyboard-interactive")
         layer = spawn(
-            ["../../graphics/wayland-layer/target/debug/pokshell-layer",
-             "--interactive", "--keyboard-interactive"],
+            layer_args,
             layer_env, layer_log,
         )
         wait_for(
@@ -196,6 +200,15 @@ with tempfile.TemporaryDirectory(prefix="pokcomp-nested-") as dirname:
             layer, layer_log, "visible diagnostic panel commit",
         )
         assert layer.poll() is None, "keyboard-enabled layer crashed"
+        if menu_mode:
+            assert "pokshell-layer buffer committed visible=1 selected=0" in (
+                layer_log.read_text(errors="replace")
+            ), "menu did not commit selected first row"
+            wait_for(
+                lambda: "pokcomp: exclusive system menu keyboard focus" in
+                    comp_log.read_text(errors="replace"),
+                compositor, comp_log, "menu exclusive keyboard focus",
+            )
         assert "overlay=1" in control("STATUS")
         assert pid in control("STATUS"), "overlay opening replaced game PID"
         assert "OK OVERLAY CLOSED" in control("OVERLAY", "CLOSE")
@@ -207,6 +220,12 @@ with tempfile.TemporaryDirectory(prefix="pokcomp-nested-") as dirname:
             layer, layer_log, "transparent panel commit after close",
         )
         assert pid in control("STATUS"), "overlay closing replaced game PID"
+        if menu_mode:
+            wait_for(
+                lambda: "pokcomp: keyboard focus returned to game after layer hide"
+                    in comp_log.read_text(errors="replace"),
+                compositor, comp_log, "game keyboard focus restoration",
+            )
         assert "OK GAME STOP" in control("GAME", "STOP")
         assert "mode=home" in control("STATUS")
         assert "OK QUIT" in control("QUIT")

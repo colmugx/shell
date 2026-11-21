@@ -113,3 +113,7 @@ jobs:
       - name: SDL2 XDG fullscreen request and game/overlay coexistence
         if: matrix.runner == 'ubuntu-24.04'
         run: python3 tests/headless_nested.py --sdl2-fullscreen
+
+      - name: Game menu render and keyboard focus lifecycle
+        if: matrix.runner == 'ubuntu-24.04'
+        run: python3 tests/headless_nested.py --menu

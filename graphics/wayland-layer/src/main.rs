@@ -451,4 +451,45 @@ mod tests {
         assert_eq!(panel.len(), 32 * 64 * 4);
         assert!(panel.chunks_exact(4).any(|p| p[3] > 0));
     }
+
+    #[test]
+    fn menu_restart_sends_two_separate_acknowledged_commands() {
+        use std::os::unix::net::UnixListener;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pokshell-test.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = thread::spawn(move || {
+            let mut received = Vec::new();
+            for _ in 0..2 {
+                let (mut client, _) = listener.accept().unwrap();
+                client.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                let mut request = String::new();
+                BufReader::new(&mut client).read_line(&mut request).unwrap();
+                received.push(request);
+                client.write_all(b"OK TEST\n").unwrap();
+            }
+            received
+        });
+        assert!(run_menu_commands(&path, MenuAction::RestartGame).is_ok());
+        assert_eq!(server.join().unwrap(), ["GAME STOP\n", "GAME START\n"]);
+    }
+
+    #[test]
+    fn menu_rejects_error_reply_without_executing_more_actions() {
+        use std::os::unix::net::UnixListener;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pokshell-reject.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = thread::spawn(move || {
+            let (mut client, _) = listener.accept().unwrap();
+            client.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut request = String::new();
+            BufReader::new(&mut client).read_line(&mut request).unwrap();
+            client.write_all(b"ERROR simulated\n").unwrap();
+            request
+        });
+        let err = run_menu_commands(&path, MenuAction::RestartGame).unwrap_err();
+        assert!(err.contains("simulated"), "{err}");
+        assert_eq!(server.join().unwrap(), "GAME STOP\n");
+    }
 }
