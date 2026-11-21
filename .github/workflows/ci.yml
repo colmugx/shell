@@ -39,6 +39,8 @@ jobs:
         run: cargo test --workspace --locked
       - name: Rust build
         run: cargo build --workspace --locked
+      - name: TTY one-command script offline validation (no DRM)
+        run: bash -n ../tools/tty && bash ../tools/tty --self-test
       - name: Native Linux DRM/KMS discovery (headless allowed)
         run: |
           ./target/debug/pokdrm

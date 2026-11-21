@@ -151,3 +151,20 @@ on readiness instead of solely returning PostAction::Continue. This avoids
 depending on an unrelated DRM/seat/input wakeup to progress a blocking
 SDL wl_display_roundtrip. Native user-visible SDL/SuperTux success remains
 unverified until physical/UTM evidence, distinct from the new CI gate.
+
+### P1-N05 single-command temporary TTY acceptance
+
+The checked-in executable `tools/tty` replaces multi-command manual
+native tests. Prepare with `./tools/tty prep` in a graphical terminal
+before stopping KDE. Run `./tools/tty` as a normal user from an
+authorized text TTY. The script refuses graphical sessions and root,
+checks prerequisites before DRM takeover, runs bounded SDL SHM/default,
+SDL SHM/no-libdecor, SDL OpenGL/no-libdecor, and SuperTux SDL scenarios,
+then stores per-case logs and a summary under a private HOME directory.
+It does not run sudo, disable KDE, delete sockets or touch other sessions.
+It remains temporary until manual physical/UTM acceptance, then is
+removed in the following development iteration.
+
+CI invokes its `--self-test` only (no DRM); x86-64 and ARM64 SDL2 protocol
+regressions now check both the normal SDL video initialization path and
+the no-libdecor variant. Neither CI path proves native KMS SuperTux.

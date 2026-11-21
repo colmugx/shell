@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Temporary P1-N05 UTM diagnostics.
+# KDE terminal: ./tools/tty prep
+# Non-root text TTY (KDE stopped): ./tools/tty
+set -Eeuo pipefail
+umask 077
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+SESSION="$ROOT/rust/target/debug/poksession"
+SDL_TEST="$ROOT/rust/compositor/tests/sdl2_client.py"
+NATIVE="$ROOT/rust/native/target/debug/poknative"
+DAEMON="$ROOT/rust/target/debug/pokshelld"
+LAYER="$ROOT/graphics/wayland-layer/target/debug/pokshell-layer"
+GAME="/usr/games/supertux2"
+CARD="/dev/dri/card0"
+RUNTIME="$(printenv XDG_RUNTIME_DIR || true)"
+RUN_DIR=""
+REPORT=""
+CHILD_PID=0
+
+fail() { printf 'pokshell-tty: %s\n' "$*" >&2; exit 1; }
+cleanup() {
+    if (( CHILD_PID > 0 )); then
+        kill -TERM "$CHILD_PID" 2>/dev/null || true
+        wait "$CHILD_PID" 2>/dev/null || true
+        CHILD_PID=0
+    fi
+}
+trap cleanup EXIT
+
+prepare() {
+    command -v cargo >/dev/null || fail "cargo missing: prepare from KDE before switching to TTY"
+    cd "$ROOT"
+    cargo build --manifest-path rust/Cargo.toml --workspace --locked
+    cargo build --manifest-path rust/native/Cargo.toml
+    cargo build --manifest-path graphics/wayland-layer/Cargo.toml
+    printf '\nBuilt. On an authorized non-root text TTY with KDE stopped, run:\n  ./tools/tty\n'
+}
+
+# Offline classification; does not access seat/DRM.
+classify() {
+    local log="$1" marker="$2"
+    if grep -Fq "$marker" "$log" && \
+        grep -Eq 'native_frames_submitted=[1-9][0-9]* presented=[1-9][0-9]*' "$log"; then
+        printf 'PRESENTED\n'
+    elif grep -Fq 'native_kms_first_frame_queued=yes' "$log"; then
+        printf 'QUEUED_NOT_CONFIRMED\n'
+    elif grep -Fq 'pokcomp: new xdg_toplevel' "$log"; then
+        printf 'XDG_NO_FRAME\n'
+    elif grep -Fq 'pokshell-sdl: video_initialized' "$log"; then
+        printf 'SDL_INIT_NO_XDG\n'
+    else
+        printf 'PRE_XDG_STALL_OR_EXIT\n'
+    fi
+}
+self_test() {
+    local fixture
+    fixture="$(mktemp /tmp/pokshell-tty-test.XXXXXXXX)"
+    printf 'pokshell-sdl: shm_surface_submitted\nnative_frames_submitted=2 presented=1\n' > "$fixture"
+    [[ "$(classify "$fixture" 'shm_surface_submitted')" == PRESENTED ]] || fail "positive result misclassified"
+    printf 'pokcomp: new xdg_toplevel\n' > "$fixture"
+    [[ "$(classify "$fixture" 'shm_surface_submitted')" == XDG_NO_FRAME ]] || fail "XDG stage misclassified"
+    printf 'pokshell-sdl: video_initialized\n' > "$fixture"
+    [[ "$(classify "$fixture" 'shm_surface_submitted')" == SDL_INIT_NO_XDG ]] || fail "SDL stage misclassified"
+    printf 'Wayland connected, no toplevel\n' > "$fixture"
+    [[ "$(classify "$fixture" 'shm_surface_submitted')" == PRE_XDG_STALL_OR_EXIT ]] || fail "pre-XDG stage misclassified"
+    rm -f -- "$fixture"
+    printf 'PASS: tty script offline tests (no KMS/seat/compositor)\n'
+}
+check_host() {
+    (( $(id -u) != 0 )) || fail "never run native DRM as root"
+    [[ -t 0 ]] || fail "run from an authorized interactive text TTY"
+    [[ -z "$(printenv WAYLAND_DISPLAY || true)" ]] || fail "Wayland desktop active: refusing DRM takeover"
+    [[ -z "$(printenv DISPLAY || true)" ]] || fail "X11 desktop active: refusing DRM takeover"
+    case "$(printenv XDG_SESSION_TYPE || true)" in
+        wayland|x11) fail "graphical session detected: refusing DRM takeover" ;;
+    esac
+    [[ -n "$RUNTIME" && -d "$RUNTIME" ]] || fail "XDG_RUNTIME_DIR missing"
+    [[ -c "$CARD" ]] || fail "$CARD is not a DRM character device"
+    for exe in "$SESSION" "$NATIVE" "$DAEMON" "$LAYER"; do
+        [[ -x "$exe" ]] || fail "missing executable $exe; run ./tools/tty prep under KDE"
+    done
+    [[ -f "$SDL_TEST" ]] || fail "SDL smoke source missing"
+    command -v timeout >/dev/null || fail "GNU timeout is required"
+    command -v python3 >/dev/null || fail "python3 is required"
+    python3 -c 'import ctypes; ctypes.CDLL("libSDL2-2.0.so.0")' ||
+        fail "SDL2 runtime library unavailable"
+    [[ ! -e "$RUNTIME/pokshell.sock" ]] ||
+        fail "existing pokshell IPC socket: refusing to replace another session"
+}
+run_case() {
+    local name="$1" marker="$2" status=0 log result
+    shift 2
+    log="$RUN_DIR/$name.log"
+    printf 'Test: %s (ends automatically after 22s)\n' "$name"
+    timeout --signal=TERM --kill-after=8s 22s "$@" > "$log" 2>&1 &
+    CHILD_PID=$!
+    wait "$CHILD_PID" || status=$?
+    CHILD_PID=0
+    result="$(classify "$log" "$marker")"
+    printf '%s\t%s\t%s\t%s\n' "$name" "$result" "$status" "$log" >> "$REPORT"
+    printf '  %s; log=%s\n' "$result" "$log"
+    [[ ! -e "$RUNTIME/pokshell.sock" ]] ||
+        fail "session left its IPC socket; stopping tests rather than removing it: $log"
+}
+run() {
+    check_host
+    RUN_DIR="$(mktemp -d "$HOME/pokshell-tty-XXXXXXXX")"
+    REPORT="$RUN_DIR/summary.tsv"
+    printf 'case\tresult\texit_code\tlog\n' > "$REPORT"
+    cd "$ROOT"
+    local python_bin
+    python_bin="$(command -v python3)"
+    run_case sdl-shm-default 'pokshell-sdl: shm_surface_submitted' \
+        "$SESSION" --native --card "$CARD" \
+        --game "$python_bin" --game-arg "$SDL_TEST" \
+        --game-arg --trace-wayland
+    run_case sdl-shm-no-libdecor 'pokshell-sdl: shm_surface_submitted' \
+        "$SESSION" --native --card "$CARD" \
+        --game "$python_bin" --game-arg "$SDL_TEST" \
+        --game-arg --no-libdecor --game-arg --trace-wayland
+    run_case sdl-opengl-no-libdecor 'pokshell-sdl: gl_swap_submitted' \
+        "$SESSION" --native --card "$CARD" \
+        --game "$python_bin" --game-arg "$SDL_TEST" \
+        --game-arg --opengl --game-arg --no-libdecor --game-arg --trace-wayland
+    if [[ -x "$GAME" ]]; then
+        run_case supertux-sdl-no-libdecor 'pokcomp: game render elements present' \
+            env SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR=0 \
+            "$SESSION" --native --card "$CARD" \
+            --game "$GAME" --game-arg --renderer --game-arg sdl
+    else
+        printf 'SuperTux absent at %s; skipping without claiming pass\n' "$GAME"
+    fi
+    printf '\nResults: %s\n' "$REPORT"
+    cat "$REPORT"
+    printf '\nLogs retained; no manual cleanup needed.\n'
+}
+
+case "$*" in
+    ""|run) run ;;
+    prep|prepare) prepare ;;
+    --self-test) self_test ;;
+    -h|--help)
+        printf 'KDE terminal: ./tools/tty prep\nNon-root TTY: ./tools/tty\nOffline: ./tools/tty --self-test\n'
+        ;;
+    *) fail "unknown option: $*" ;;
+esac

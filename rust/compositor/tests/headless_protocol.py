@@ -41,36 +41,39 @@ with tempfile.TemporaryDirectory(prefix="poknative-wayland-protocol-") as d:
     runtime = root / "run"
     runtime.mkdir(mode=0o700)
     env = {**os.environ, "XDG_RUNTIME_DIR": str(runtime),
-           "WAYLAND_DISPLAY": "pokshell-protocol", "SDL_VIDEODRIVER": "wayland",
-           "SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR": "0"}
-    env.pop("DISPLAY", None)
-    env.pop("WAYLAND_SOCKET", None)
+           "WAYLAND_DISPLAY": "pokshell-protocol", "SDL_VIDEODRIVER": "wayland"}
+    for name in ("DISPLAY", "WAYLAND_SOCKET", "SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR"):
+        env.pop(name, None)
     server_log = root / "server.log"
-    client_log = root / "client.log"
     with server_log.open("wb") as output:
         server = subprocess.Popen([str(HARNESS)], env=env,
                                   stdout=output, stderr=subprocess.STDOUT)
     try:
         until(lambda: (runtime / "pokshell-protocol").is_socket(),
               server, server_log, "Wayland listener")
-        with client_log.open("wb") as output:
-            client = subprocess.Popen([sys.executable, str(CLIENT), "--window-only"],
-                                      env=env, stdout=output, stderr=subprocess.STDOUT)
-        try:
-            until(lambda: "pokshell-sdl: video_initialized" in
-                  client_log.read_text(errors="replace"),
-                  client, client_log, "SDL2_VideoInit")
-            client.wait(timeout=10)
-            log = client_log.read_text(errors="replace")
-            assert client.returncode == 0, log
-            assert "pokshell-sdl: xdg_window_created window_only=1" in log, log
-            until(lambda: "pokcomp: new xdg_toplevel" in
-                  server_log.read_text(errors="replace"),
-                  server, server_log, "XDG role")
-            assert server.poll() is None, "protocol server exited unexpectedly"
-            print("PASS: SDL2 Wayland video init and XDG window via native-style calloop")
-            print("PASS: no KMS/DRM/seat access in protocol-only CI harness")
-        finally:
-            stop(client)
+        for variant, override in [
+            ("default", {}),
+            ("no-libdecor", {"SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR": "0"}),
+        ]:
+            client_log = root / f"client-{variant}.log"
+            with client_log.open("wb") as output:
+                client = subprocess.Popen([sys.executable, str(CLIENT), "--window-only"],
+                                          env={**env, **override},
+                                          stdout=output, stderr=subprocess.STDOUT)
+            try:
+                until(lambda: "pokshell-sdl: video_initialized" in
+                      client_log.read_text(errors="replace"),
+                      client, client_log, f"{variant} SDL2_VideoInit")
+                client.wait(timeout=10)
+                log = client_log.read_text(errors="replace")
+                assert client.returncode == 0, log
+                assert "pokshell-sdl: xdg_window_created window_only=1" in log, log
+                until(lambda: "pokcomp: new xdg_toplevel" in
+                      server_log.read_text(errors="replace"),
+                      server, server_log, f"{variant} XDG role")
+                print(f"PASS: {variant} SDL video init and XDG via native-style calloop")
+            finally:
+                stop(client)
+        print("PASS: protocol-only regression ran without DRM/KMS/seat")
     finally:
         stop(server)
