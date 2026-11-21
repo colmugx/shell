@@ -135,7 +135,9 @@ fn run(opts: Options) -> Result<(), Box<dyn Error>> {
 
     let mut libinput = Libinput::new_with_udev::<LibinputSessionInterface<LibSeatSession>>(
         session.clone().into());
-    libinput.udev_assign_seat(&session.seat())?;
+    libinput.udev_assign_seat(&session.seat()).map_err(|()| {
+        std::io::Error::other("libinput could not attach to the active Linux seat")
+    })?;
     let input_backend = LibinputInputBackend::new(libinput.clone());
     seat_events.handle().insert_source(input_backend, |event, _, state| {
         state.input_events += 1;
