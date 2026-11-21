@@ -318,7 +318,7 @@ impl PokCompositor {
                 let size = mode.size;
                 self.output.change_current_state(Some(mode), None, None, None);
                 self.output.set_preferred(mode);
-                for game in self.xdg_shell_self.toplevel_surfaces() {
+                for game in self.xdg_shell_state.toplevel_surfaces() {
                     let previous = game.current_state();
                     let full = previous.states.contains(xdg_toplevel::State::Fullscreen);
                     let max = previous.states.contains(xdg_toplevel::State::Maximized);
@@ -334,7 +334,7 @@ impl PokCompositor {
                         eprintln!("pokcomp: xdg output resize={}x{}", extent.w, extent.h);
                     }
                 }
-                for layer in self.layer_shell_self.layer_surfaces().filter(|layer| layer.alive()) {
+                for layer in self.layer_shell_state.layer_surfaces().filter(|layer| layer.alive()) {
                     layer.with_pending_state(|pending| {
                         pending.size = Some((DIAGNOSTIC_LAYER_WIDTH, size.h).into());
                     });
@@ -391,15 +391,15 @@ impl PokCompositor {
                     // asks for OnDemand and is focused by click; the classic
                     // pointer-only mode never steals game keyboard focus.
                     let focused = hit.and_then(|(surface, _)| {
-                        let is_layer = self.layer_shell_self.layer_surfaces()
+                        let is_layer = self.layer_shell_state.layer_surfaces()
                             .any(|layer| layer.alive() && layer.wl_surface() == &surface);
                         if is_layer {
                             let keyboard_interactivity = smithay::wayland::compositor::with_states(&surface, |states| {
-                                states.cached_self.get::<smithay::wayland::shell::wlr_layer::LayerSurfaceCachedState>()
+                                states.cached_state.get::<smithay::wayland::shell::wlr_layer::LayerSurfaceCachedState>()
                                     .current().keyboard_interactivity
                             });
                             if keyboard_interactivity == smithay::wayland::shell::wlr_layer::KeyboardInteractivity::None {
-                                self.xdg_shell_self.toplevel_surfaces().last()
+                                self.xdg_shell_state.toplevel_surfaces().last()
                                     .map(|game| game.wl_surface().clone())
                             } else {
                                 Some(surface)
@@ -432,7 +432,7 @@ impl PokCompositor {
             // surfaces must appear before game XDG elements to appear above
             // them in the final composed frame.
             let mut elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = Vec::new();
-            for layer in self.layer_shell_self.layer_surfaces().filter(|layer| layer.alive()) {
+            for layer in self.layer_shell_state.layer_surfaces().filter(|layer| layer.alive()) {
                 // The diagnostic client requests TOP|BOTTOM|RIGHT, width=320.
                 // General anchor/stacking policy is deliberately not yet present.
                 let x = (size.w - DIAGNOSTIC_LAYER_WIDTH).max(0);
@@ -442,7 +442,7 @@ impl PokCompositor {
             }
             // All XDG toplevels overlap at the origin for this experiment.
             let layer_element_count = elements.len();
-            for surface in self.xdg_shell_self.toplevel_surfaces() {
+            for surface in self.xdg_shell_state.toplevel_surfaces() {
                 elements.extend(render_elements_from_surface_tree(
                     renderer, surface.wl_surface(), (0, 0), 1.0, 1.0, Kind::Unspecified,
                 ));
@@ -549,10 +549,10 @@ impl Server {
     pub fn rendered(&mut self) { self.state.dirty = false; }
     pub fn frame_done(&mut self) {
             let timestamp_ms = self.start.elapsed().as_millis() as u32;
-            for surface in self.state.xdg_shell_self.state.toplevel_surfaces() {
+            for surface in self.state.xdg_shell_state.toplevel_surfaces() {
                 send_frame_callbacks(surface.wl_surface(), timestamp_ms);
             }
-            for surface in self.state.layer_shell_self.state.layer_surfaces().filter(|layer| layer.alive()) {
+            for surface in self.state.layer_shell_state.layer_surfaces().filter(|layer| layer.alive()) {
                 send_frame_callbacks(surface.wl_surface(), timestamp_ms);
             }
 
