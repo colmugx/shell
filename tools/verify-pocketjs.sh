@@ -33,5 +33,8 @@ HOST="dist/pokshell-linux/runtime/pocket-linux-kms"
 "$HOST" --package apps/pokshell/dist/pokshell-home.pkb --check
 "$HOST" --package apps/pokshell/dist/pokshell-home.pkb --headless --frames 4
 echo "PASS P2-J01: native PocketJS Linux host executed original TSX/QuickJS UI for 4 ticks"
-cargo test --manifest-path programs/linux-kms/Cargo.toml --bin pocket-linux-kms
+bun tools/pocket.ts host export --config programs/linux-kms/pocket.host.config.ts \
+  --out .pocket-build/pokshell-ci-profile
+POCKETJS_PROFILE_RS="$PWD/.pocket-build/pokshell-ci-profile/pocket_profile.rs" \
+  cargo test --manifest-path programs/linux-kms/Cargo.toml --bin pocket-linux-kms
 python3 "$ROOT/tools/test-pocketjs-service.py" "$UPSTREAM"
