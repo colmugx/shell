@@ -29,6 +29,6 @@ bun tools/pocket.ts build --config programs/linux-kms/pocket.host.config.ts \
   --out dist/pokshell-linux
 HOST="dist/pokshell-linux/runtime/pocket-linux-kms"
 [[ -x "$HOST" ]] || { echo "Native PocketJS runtime absent" >&2; exit 1; }
-"$HOST" --package dist/pokshell-home.pkb --check
-"$HOST" --package dist/pokshell-home.pkb --headless --frames 4
+"$HOST" --package apps/pokshell/dist/pokshell-home.pkb --check
+"$HOST" --package apps/pokshell/dist/pokshell-home.pkb --headless --frames 4
 echo "PASS P2-J01: native PocketJS Linux host executed original TSX/QuickJS UI for 4 ticks"
