@@ -189,3 +189,24 @@ count and XDG toplevel count for each attempt. These outputs must not be
 treated as hardware acceptance until UTM evidence arrives. Script stays
 temporary until successful TTY validation, and will be removed in the
 next iteration once the results support it.
+
+### P1-N05 TTY script source/binary consistency gate
+
+The user-facing 2026-11-22 UTM summary showed four timeouts (124) and
+one immediate exit (2) for the new `--no-dmabuf` comparison, all without
+a visible XDG window. The non-timeout exit cannot be attributed to
+EGL/DMABUF without its log; notably, `git pull` does not rebuild Rust
+binaries, which can leave an updated script invoking a stale binary
+that does not recognize `--no-dmabuf`.
+
+`tools/tty prep` now writes the built Git revision to a private,
+untracked target-directory stamp only after all three builds succeed.
+`tools/tty` refuses to run before a matching stamp is present, so an
+outdated binary cannot masquerade as a Wayland capability failure.
+The report distinguishes SDL_Init blocking, non-timeout option/launch
+errors and actual XDG/first-frame failures. CLI failures display one
+short actionable error; raw logs remain available.
+
+Protocol-only CI now verifies that a successful SDL2 XDG handshake
+increases the server's dispatched request counter (not merely that
+clients connect). This is not evidence of native KMS scanout.

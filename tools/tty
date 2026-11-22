@@ -14,6 +14,7 @@ DAEMON="$ROOT/rust/target/debug/pokshelld"
 LAYER="$ROOT/graphics/wayland-layer/target/debug/pokshell-layer"
 GAME="/usr/games/supertux2"
 CARD="/dev/dri/card0"
+STAMP="$ROOT/rust/native/target/pokshell-tty-prepared.sha"
 RUNTIME="$(printenv XDG_RUNTIME_DIR || true)"
 RUN_DIR=""
 REPORT=""
@@ -35,7 +36,25 @@ prepare() {
     cargo build --manifest-path rust/Cargo.toml --workspace --locked
     cargo build --manifest-path rust/native/Cargo.toml
     cargo build --manifest-path graphics/wayland-layer/Cargo.toml
-    printf '\nBuilt. On an authorized non-root text TTY with KDE stopped, run:\n  ./tools/tty\n'
+    # A git pull updates the script but does not rebuild its binaries.
+    # Only a successful, complete build records this exact source revision.
+    local head tmp
+    head="$(git -C "$ROOT" rev-parse HEAD)"
+    tmp="$(mktemp "$STAMP.XXXXXXXX")"
+    printf '%s\n' "$head" > "$tmp"
+    mv -f -- "$tmp" "$STAMP"
+    printf '\nPrepared revision %s. From the non-root text TTY run:\n  ./tools/tty\n' "${head:0:10}"
+}
+
+# A missing/newer executable produces misleading protocol regressions.
+# This check is deliberately before any attempt to open a DRM device.
+check_prepared() {
+    local head prepared
+    head="$(git -C "$ROOT" rev-parse HEAD)" || fail "cannot read repository revision"
+    [[ -f "$STAMP" ]] || fail "compiled binaries not registered; run ./tools/tty prep in KDE"
+    prepared="$(cat "$STAMP")"
+    [[ "$prepared" == "$head" ]] ||
+        fail "source changed since binaries were built; run ./tools/tty prep in KDE"
 }
 
 # Record server progress in the short on-screen result.
@@ -53,7 +72,12 @@ server_progress() {
 
 # Offline classification; does not access seat/DRM.
 classify() {
-    local log="$1" marker="$2"
+    local log="$1" marker="$2" status="${3:-0}"
+    if [[ "$status" != 0 && "$status" != 124 && "$status" != 137 ]] &&
+        ! grep -Fq 'pokcomp: new xdg_toplevel' "$log"; then
+        printf 'EARLY_EXIT_OR_OPTION_ERROR\n'
+        return
+    fi
     if grep -Fq "$marker" "$log" && \
         grep -Eq 'native_frames_submitted=[1-9][0-9]* presented=[1-9][0-9]*' "$log"; then
         printf 'PRESENTED\n'
@@ -63,6 +87,8 @@ classify() {
         printf 'XDG_NO_FRAME\n'
     elif grep -Fq 'pokshell-sdl: video_initialized' "$log"; then
         printf 'SDL_INIT_NO_XDG\n'
+    elif grep -Fq 'pokshell-sdl: before_video_init' "$log"; then
+        printf 'SDL_VIDEO_INIT_BLOCKED\n'
     else
         printf 'PRE_XDG_STALL_OR_EXIT\n'
     fi
@@ -78,6 +104,12 @@ self_test() {
     [[ "$(classify "$fixture" 'shm_surface_submitted')" == SDL_INIT_NO_XDG ]] || fail "SDL stage misclassified"
     printf 'Wayland connected, no toplevel\n' > "$fixture"
     [[ "$(classify "$fixture" 'shm_surface_submitted')" == PRE_XDG_STALL_OR_EXIT ]] || fail "pre-XDG stage misclassified"
+    printf 'pokshell-sdl: before_video_init\n' > "$fixture"
+    [[ "$(classify "$fixture" 'shm_surface_submitted' 124)" == SDL_VIDEO_INIT_BLOCKED ]] ||
+        fail "SDL init stall misclassified"
+    printf 'poksession: unknown/duplicate argument: --no-dmabuf\n' > "$fixture"
+    [[ "$(classify "$fixture" 'shm_surface_submitted' 2)" == EARLY_EXIT_OR_OPTION_ERROR ]] ||
+        fail "CLI error misclassified"
     rm -f -- "$fixture"
     printf 'PASS: tty script offline tests (no KMS/seat/compositor)\n'
 }
@@ -95,6 +127,7 @@ check_host() {
         [[ -x "$exe" ]] || fail "missing executable $exe; run ./tools/tty prep under KDE"
     done
     [[ -f "$SDL_TEST" ]] || fail "SDL smoke source missing"
+    check_prepared
     command -v timeout >/dev/null || fail "GNU timeout is required"
     command -v python3 >/dev/null || fail "python3 is required"
     python3 -c 'import ctypes; ctypes.CDLL("libSDL2-2.0.so.0")' ||
@@ -111,11 +144,16 @@ run_case() {
     CHILD_PID=$!
     wait "$CHILD_PID" || status=$?
     CHILD_PID=0
-    result="$(classify "$log" "$marker")"
+    result="$(classify "$log" "$marker" "$status")"
     local progress
     progress="$(server_progress "$log")"
     printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$result" "$status" "$progress" "$log" >> "$REPORT"
     printf '  %s; %s; log=%s\n' "$result" "$progress" "$log"
+    if [[ "$result" == EARLY_EXIT_OR_OPTION_ERROR ]]; then
+        # Print the actionable failure rather than mislabel it as a GPU stall.
+        grep -Ei 'unknown|error:|failed|not found|requires|unsupported' "$log" |
+            tail -n 1 | cut -c 1-200 || true
+    fi
     [[ ! -e "$RUNTIME/pokshell.sock" ]] ||
         fail "session left its IPC socket; stopping tests rather than removing it: $log"
 }

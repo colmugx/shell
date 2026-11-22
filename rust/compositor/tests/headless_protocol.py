@@ -71,7 +71,16 @@ with tempfile.TemporaryDirectory(prefix="poknative-wayland-protocol-") as d:
                 until(lambda: "pokcomp: new xdg_toplevel" in
                       server_log.read_text(errors="replace"),
                       server, server_log, f"{variant} XDG role")
-                print(f"PASS: {variant} SDL video init and XDG via native-style calloop")
+                until(lambda: "protocol_harness_xdg_toplevel_seen=yes" in
+                      server_log.read_text(errors="replace"),
+                      server, server_log, "request accounting")
+                import re
+                match = re.search(
+                    r"protocol_harness_xdg_toplevel_seen=yes dispatched_requests=([0-9]+)",
+                    server_log.read_text(errors="replace"),
+                )
+                assert match and int(match.group(1)) > 0, server_log.read_text()
+                print(f"PASS: {variant} SDL init + XDG; dispatched={match.group(1)}")
             finally:
                 stop(client)
         print("PASS: protocol-only regression ran without DRM/KMS/seat")

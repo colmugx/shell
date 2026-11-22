@@ -41,7 +41,8 @@ fn run() -> Result<(), Box<dyn Error>> {
         let server = state.server.as_mut().expect("server initialized");
         server.dispatch()?;
         if !toplevel_reported && server.client_counts().0 > 0 {
-            println!("protocol_harness_xdg_toplevel_seen=yes");
+            println!("protocol_harness_xdg_toplevel_seen=yes dispatched_requests={}",
+                server.dispatched_requests());
             toplevel_reported = true;
         }
     }
