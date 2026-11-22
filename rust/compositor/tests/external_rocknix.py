@@ -13,7 +13,7 @@ import sys
 import tempfile
 import time
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 RUNNER = ROOT / "tools/rocknix-session"
 CLIENT = ROOT / "rust/compositor/tests/sdl2_client.py"
 
