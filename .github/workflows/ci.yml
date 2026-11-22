@@ -172,6 +172,8 @@ jobs:
       - name: Install upstream PocketJS dependencies
         working-directory: pocketjs-upstream
         run: bun install --frozen-lockfile
+      - name: Build live pokshelld for PocketJS host service test
+        run: cargo build --manifest-path rust/Cargo.toml --locked --bin pokshelld
       - name: Compile, admit and run real PocketJS Linux UI headlessly
         run: bash tools/verify-pocketjs.sh "$PWD/pocketjs-upstream"
 

@@ -182,3 +182,10 @@ the pinned v0.17.0 product-linux-kms host contract. The software-headless
 QuickJS/Rust admission test is CI-gated. A compositable Wayland host and
 least-privilege command bridge remain required for P2-J02/03. Native
 PocketJS hardware scanout is not inferred from headless execution.
+
+P2-J03 restricted session bridge prototype (2026-11-22): pinned PocketJS
+v0.17 native OpProvider 30–32 maps an explicit service channel to fixed
+pokshelld actions, with bounded Unix IPC and no executable/path/power
+control. CI headless runs the actual PocketJS guest against the actual
+Rust daemon; the Wayland-rendered UI and permission-separated plugins
+remain open gates, not finished milestones.

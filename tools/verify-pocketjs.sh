@@ -21,6 +21,7 @@ APP_DIR="$UPSTREAM/apps/pokshell"
 [[ ! -e "$APP_DIR" ]] ||
   { echo "Refusing to replace existing upstream apps/pokshell" >&2; exit 2; }
 cp -R "$ROOT/ui/pocketjs" "$APP_DIR"
+python3 "$ROOT/tools/prepare-pocketjs-host.py" "$UPSTREAM"
 cd "$UPSTREAM"
 bun tools/pocket.ts check --config apps/pokshell/pocket.host.config.ts
 bun tools/pocket.ts compile --config apps/pokshell/pocket.host.config.ts \
@@ -32,3 +33,5 @@ HOST="dist/pokshell-linux/runtime/pocket-linux-kms"
 "$HOST" --package apps/pokshell/dist/pokshell-home.pkb --check
 "$HOST" --package apps/pokshell/dist/pokshell-home.pkb --headless --frames 4
 echo "PASS P2-J01: native PocketJS Linux host executed original TSX/QuickJS UI for 4 ticks"
+cargo test --manifest-path programs/linux-kms/Cargo.toml --bin pocket-linux-kms
+python3 "$ROOT/tools/test-pocketjs-service.py" "$UPSTREAM"

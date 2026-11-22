@@ -25,3 +25,24 @@ Library, Settings and Quick Menu are currently local UI screens only.
 Local reproduction from a graphical terminal: clone the pinned upstream
 PocketJS commit into a disposable directory, install its dependencies,
 then call tools/verify-pocketjs.sh /path/to/pocketjs-checkout.
+
+## P2-J03 real PocketJS native service bridge
+
+Original Rust source: host/pokshell_svc.rs. The test-only integration
+script at tools/prepare-pocketjs-host.py copies it into a pinned,
+disposable upstream checkout and registers PocketJS's documented
+OpProvider for svcOpen/svcSend/svcPoll (ops 30–32). This avoids copying
+PocketJS's code into pokshell or inventing an incompatible guest API.
+
+The actual PocketJS frontend uses createServiceClient("pokshell") and
+can send only fixed action IDs: status, game.start, game.stop,
+overlay.open and overlay.close. The native provider maps these to the
+daemon's existing game/overlay IPC; the guest cannot select a new
+program, run a shell or call privileged power APIs.
+
+CI starts a real pokshelld, boots the actual guest in the headless Linux
+host, and verifies the guest's STATUS request reaches pokshelld.
+It does not yet inject D-pad button events to activate the UI controls.
+No Wayland window can be shown through upstream pocket-linux-kms:
+its DRM/fbdev output is not compositable with Sway. That host bridge
+is separate future development; rendering is not being faked here.

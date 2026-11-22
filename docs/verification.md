@@ -330,3 +330,33 @@ composition or physical input. The upstream Linux-KMS host owns DRM in
 non-headless mode and must never be started inside our live Sway session.
 Future work: explicitly bridged service capabilities and a compositable
 Wayland host, not uncontrolled access to the session IPC socket.
+
+### P2-J03 restricted native PocketJS session service (2026-11-22)
+
+The PocketJS v0.17 host Ops 30, 31 and 32 (svcOpen, svcPoll, svcSend)
+are explicitly wired into the *pinned disposable upstream Linux runtime*
+through its official Rust OpProvider registration point. The original
+provider source lives at ui/pocketjs/host/pokshell_svc.rs; no upstream
+PocketJS source is copied into the pokshell repo. This is not a new or
+fabricated PocketJS guest API. The upstream host is copied into the CI
+workspace, then the small host integration module is inserted into that
+disposable checkout (never edits a global runtime installation).
+
+A service endpoint is present only when an explicit absolute
+POKSHELL_SESSION_SOCKET environment variable is supplied. Service "pokshell"
+translates only status, game.start, game.stop, overlay.open and
+overlay.close into exact pokshelld IPC strings. No guest command can
+override the configured game executable, choose a shell, kill the
+compositor, request power operations or change arbitrary files.
+Requests, queue depth and IPC read/write times are bounded; the socket
+must be a real Unix socket and never a symlink. This is a first
+capability boundary, NOT general app/plugin permission isolation.
+
+The PocketJS CI job compiles the real original TSX guest to .pkb, builds
+the modified (ephemeral) upstream QuickJS/Rust host, tests its provider,
+starts the actual Rust pokshelld with a preconfigured /bin/sleep workload
+and validates that guest STATUS reaches the daemon. This proves service
+roundtrip in a software headless runtime, not Wayland presentation,
+gamepad-controlled focus or a remotely hosted UI. The Linux-KMS host
+remains headless-only under this test; never start it against DRM while
+Sway or poknative owns the display.
