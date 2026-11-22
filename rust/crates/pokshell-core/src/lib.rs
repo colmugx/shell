@@ -46,6 +46,9 @@ pub struct GameConfig {
     /// Explicit *nested* Wayland socket basename. With Some(..), fail closed
     /// instead of accidentally opening the game under KDE/XWayland.
     pub wayland_display: Option<OsString>,
+    /// Explicit opt-in to an already-running Sway/ROCKNIX Wayland server.
+    /// Never inferred from WAYLAND_DISPLAY, keeping KDE isolation as default.
+    pub allow_external_wayland: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,6 +102,12 @@ pub struct Supervisor {
     last_exit: Option<i32>,
     last_signal: Option<i32>,
     pending: Vec<SessionEvent>,
+}
+
+fn valid_display_name(name: &str, allow_external: bool) -> bool {
+    let prefix_ok = allow_external || (name.starts_with("pokshell-") && name.len() > 9);
+    prefix_ok && !name.is_empty() && name.len() <= 70 &&
+        name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 impl Supervisor {
@@ -157,13 +166,9 @@ impl Supervisor {
         let name = display.to_str().ok_or_else(|| io::Error::new(
             io::ErrorKind::InvalidInput, "Wayland socket name must be UTF-8"
         ))?;
-        // Never silently accept the host KDE socket (typically wayland-0).
-        if !name.starts_with("pokshell-") || name.len() <= "pokshell-".len()
-            || name.len() > 70 || !name.bytes().all(|c|
-                c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
-        {
+        if !valid_display_name(name, config.allow_external_wayland) {
             return Err(io::Error::new(io::ErrorKind::InvalidInput,
-                "game Wayland display must be a pokshell-* socket basename"));
+                "Wayland display must be a safe explicit socket basename (pokshell-* unless external mode)"));
         }
         let runtime = env::var_os("XDG_RUNTIME_DIR")
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound,
@@ -174,7 +179,7 @@ impl Supervisor {
                 "XDG_RUNTIME_DIR must be an absolute directory"));
         }
         let socket_path = runtime.join(display);
-        let metadata = fs::metadata(&socket_path).map_err(|err| io::Error::new(
+        let metadata = fs::symlink_metadata(&socket_path).map_err(|err| io::Error::new(
             err.kind(), format!("nested game socket {} not ready: {err}", socket_path.display())
         ))?;
         if !metadata.file_type().is_socket() {
@@ -193,7 +198,8 @@ impl Supervisor {
             .env("XDG_SESSION_TYPE", "wayland")
             .env_remove("DISPLAY")
             .env_remove("WAYLAND_SOCKET"); // inherited fd overrides WAYLAND_DISPLAY
-        eprintln!("pokshell: game transport nested_wayland={name} x11_fallback=disabled");
+        eprintln!("pokshell: game transport {}_wayland={name} x11_fallback=disabled",
+            if config.allow_external_wayland { "external" } else { "nested" });
         Ok(())
     }
 
@@ -339,7 +345,7 @@ mod tests {
     fn lifecycle_events_and_signal_exit() {
         let mut service = Supervisor::new(Some(GameConfig {
             program: PathBuf::from("/bin/sleep"), args: vec!["120".into()],
-            wayland_display: None,
+            wayland_display: None, allow_external_wayland: false,
         }));
         let pid = service.start().unwrap();
         assert_eq!(service.take_events(), vec![SessionEvent::GameStarted {pid}]);
@@ -354,13 +360,23 @@ mod tests {
         assert_eq!(status.last_signal, Some(SIGTERM));
     }
 
+    #[test]
+    fn explicit_external_socket_basename_stays_safe() {
+        assert!(valid_display_name("wayland-0", true));
+        assert!(!valid_display_name("wayland-0", false));
+        assert!(valid_display_name("pokshell-test", false));
+        for name in ["../wayland-0", "/run/wayland-0", "wayland/0", "", "wayland-!", "."] {
+            assert!(!valid_display_name(name, true), "{name}");
+        }
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn explicit_wayland_display_is_fail_closed() {
         let mut service = Supervisor::new(Some(GameConfig {
             program: PathBuf::from("/bin/sleep"),
             args: vec!["120".into()],
-            wayland_display: Some("wayland-0".into()),
+            wayland_display: Some("wayland-0".into()), allow_external_wayland: false,
         }));
         assert!(service.execute("GAME START").contains("pokshell-*"));
         assert!(service.snapshot().unwrap().running_pid.is_none());
@@ -371,7 +387,7 @@ mod tests {
     fn spontaneous_exit_is_reaped_and_reported() {
         let mut service = Supervisor::new(Some(GameConfig {
             program: PathBuf::from("/bin/false"), args: vec![],
-            wayland_display: None,
+            wayland_display: None, allow_external_wayland: false,
         }));
         let pid = service.start().unwrap();
         service.take_events();

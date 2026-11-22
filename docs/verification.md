@@ -288,18 +288,14 @@ until the native renderer is genuinely accepted.
 
 ### P1-ROCKNIX Rust session consolidation (2026-11-22)
 
-`poksession --external-wayland SOCKET --game /absolute/game` now
-supervises the existing Sway/ROCKNIX backend directly in Rust. It
-validates a user-supplied socket basename and the existing socket type,
-refuses root and stale IPC paths, and rejects combinations with native
-DRM flags, compositor overrides or no-autostart. It does not create,
-signal or unlink the external Wayland compositor. The game and layer
-still use the existing explicit `--allow-external-wayland` flags,
-with inherited WAYLAND_SOCKET/DISPLAY suppressed.
+`poksession --external-wayland SOCKET --game /absolute/game` is the canonical
+Rust supervisor for pre-existing Sway/ROCKNIX. It validates the explicit
+socket and user, refuses DRM/compositor override combinations, owns only
+pokshelld, its game and the layer menu, and leaves Sway untouched.
 
-`tools/rocknix-session --display SOCKET --game /absolute/game`
-remains as a compatibility alias only: it uses `execv` to replace itself
-with the Rust supervisor, not a parallel polling/signal implementation.
-The main headless Sway integration now exercises the Rust entrypoint,
-and also checks the alias --help. A passing software headless test
-does not establish physical ROCKNIX graphics, gamepad focus or power.
+`tools/rocknix-session --display SOCKET --game /absolute/game` remains an
+exec-only compatibility wrapper, eliminating duplicate signal handling and
+lifecycle code. The x86-64 headless Sway integration test invokes Rust
+poksession directly and asserts SDL2 SHM submission, layer configure and
+that external Sway survives after pokshell shutdown. Physical ROCKNIX
+graphics and real gamepad behavior remain unverified.

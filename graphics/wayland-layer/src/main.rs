@@ -53,9 +53,26 @@ fn validate_nested_display(runtime: &Path, name: &str) -> Result<PathBuf, String
     Ok(socket)
 }
 
-fn nested_connection(name: &str) -> Result<Connection, Box<dyn std::error::Error>> {
+fn validate_external_display(runtime: &Path, name: &str) -> Result<PathBuf, String> {
+    if !runtime.is_absolute() || !runtime.is_dir() || name.is_empty() || name.len() > 70
+        || !name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_') {
+        return Err("--allow-external-wayland requires an explicit safe socket basename".into());
+    }
+    let path = runtime.join(name);
+    let meta = path.symlink_metadata().map_err(|err| err.to_string())?;
+    if !meta.file_type().is_socket() {
+        return Err("external Wayland endpoint is not a socket (no symlinks permitted)".into());
+    }
+    Ok(path)
+}
+
+fn nested_connection(name: &str, allow_external: bool) -> Result<Connection, Box<dyn std::error::Error>> {
     let runtime = env::var_os("XDG_RUNTIME_DIR").ok_or("XDG_RUNTIME_DIR missing")?;
-    let socket = validate_nested_display(Path::new(&runtime), name)?;
+    let socket = if allow_external {
+        validate_external_display(Path::new(&runtime), name)?
+    } else {
+        validate_nested_display(Path::new(&runtime), name)?
+    };
     let stream = UnixStream::connect(&socket).map_err(|err| {
         io::Error::new(err.kind(), format!("cannot connect to nested Wayland {}: {err}", socket.display()))
     })?;
@@ -436,6 +453,7 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for App {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut socket = default_socket();
     let mut nested_display: Option<String> = None;
+    let mut allow_external = false;
     let mut force_visible = false;
     let mut interactive = false;
     let mut keyboard_interactive = false;
@@ -450,6 +468,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .to_str().ok_or("--display must be UTF-8")?.to_owned());
             },
             Some("--display") => return Err("--display may be specified only once".into()),
+            Some("--allow-external-wayland") if !allow_external => allow_external = true,
             Some("--show") => force_visible = true,
             Some("--interactive") => interactive = true,
             Some("--keyboard-interactive") => {
@@ -474,6 +493,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if menu_mode && nested_display.is_none() {
         return Err("--menu requires --display pokshell-N; refusing to render on the KDE desktop".into());
     }
+    if allow_external && nested_display.is_none() {
+        return Err("--allow-external-wayland requires --display".into());
+    }
     if joystick_path.is_some() && !menu_mode {
         return Err("--joystick requires --menu".into());
     }
@@ -488,7 +510,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !force_visible { subscribe(socket.clone(), Arc::clone(&visible)); }
 
     let conn = if let Some(name) = nested_display.as_deref() {
-        nested_connection(name)?
+        nested_connection(name, allow_external)?
     } else {
         // Backwards-compatible diagnostic Layer Shell probe, not a game menu.
         Connection::connect_to_env()?
@@ -565,6 +587,19 @@ mod tests {
         std::os::unix::fs::symlink(&endpoint, dir.path().join("pokshell-link")).unwrap();
         assert!(validate_nested_display(dir.path(), "pokshell-link").is_err());
         assert!(validate_nested_display(dir.path(), "pokshell-missing").is_err());
+    }
+
+    #[test]
+    fn explicit_external_wayland_still_rejects_symlink_and_traversal() {
+        use std::os::unix::net::UnixListener;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wayland-rocknix");
+        let _listener = UnixListener::bind(&path).unwrap();
+        assert_eq!(validate_external_display(dir.path(), "wayland-rocknix").unwrap(), path);
+        assert!(validate_external_display(dir.path(), "../wayland-0").is_err());
+        assert!(validate_external_display(dir.path(), "wayland/0").is_err());
+        std::os::unix::fs::symlink(&path, dir.path().join("wayland-link")).unwrap();
+        assert!(validate_external_display(dir.path(), "wayland-link").is_err());
     }
 
     #[test]
