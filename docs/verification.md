@@ -313,3 +313,20 @@ pokctl, verifies visible/transparent SHM frames and focus-policy
 transitions, and proves that the supervised game's PID remains unchanged.
 This enables upper-layer UI integration without treating real input leakage
 as validated. A hardware keyboard/controller test still gates P1-N06.
+
+### P2-J01 PocketJS upstream Linux runtime integration (source; CI pending)
+
+An original PocketJS/TypeScript app exists at ui/pocketjs. It uses the
+supported PocketJS Solid/TSX framework with native Text and View nodes and
+button input, matching the upstream product-linux-kms 800x600 profile.
+It is NOT a DOM/WebView and has no fabricated native PocketJS Rust API.
+
+The CI job pocketjs-native-ui checks out pocket-nexus/pocketjs v0.17.0
+at immutable commit 83c6cac996237968785125118b543cd4e339254c, installs Bun 1.4.2 and Rust 1.98.1,
+compiles the real app to .pkb, builds the real Linux runtime and runs
+bundle admission plus four QuickJS/Rust headless ticks. This checks
+application/compiler/runtime compatibility, not visible game/overlay
+composition or physical input. The upstream Linux-KMS host owns DRM in
+non-headless mode and must never be started inside our live Sway session.
+Future work: explicitly bridged service capabilities and a compositable
+Wayland host, not uncontrolled access to the session IPC socket.

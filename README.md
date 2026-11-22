@@ -108,3 +108,11 @@ POCKET_BIN_DIR="$PWD/build" python3 tests/test_runtime.py
 See [verification](docs/verification.md), [license notes](docs/licensing.md) and [engineering rules](AGENTS.md). New original source is **GPL-3.0-or-later**; upstream components retain their licenses.
 
 Name, design and system architecture remain subject to change. No proprietary firmware or game assets are committed.
+
+## P2-J01 native PocketJS application spike
+
+The original TypeScript/TSX PocketJS app in ui/pocketjs is compiled with the
+actual upstream PocketJS v0.17.0 Linux host contract. The CI PocketJS job
+checks bundle admission and executes QuickJS/Rust UI ticks headlessly using
+the upstream pocket-linux-kms program. This is not yet a composited Wayland
+home screen and contains no privileged IPC path. See ui/pocketjs/README.md.

@@ -176,3 +176,9 @@ P1-ROCKNIX consolidation: canonical Rust `poksession --external-wayland`
 replaces the Python session supervisor while retaining an exec-only
 compatibility alias; the pre-existing Sway compositor remains the sole
 DRM/seat owner. CI must keep the headless Sway SDL2/menu lifecycle test.
+
+P2-J01 implementation (2026-11-22): original PocketJS Solid/TSX UI with
+the pinned v0.17.0 product-linux-kms host contract. The software-headless
+QuickJS/Rust admission test is CI-gated. A compositable Wayland host and
+least-privilege command bridge remain required for P2-J02/03. Native
+PocketJS hardware scanout is not inferred from headless execution.

@@ -148,6 +148,33 @@ jobs:
         if: matrix.runner == 'ubuntu-24.04'
         run: python3 tests/headless_nested.py --menu
 
+
+  pocketjs-native-ui:
+    # P2-J01: real PocketJS compiler + native QuickJS/Rust host, not a UI stub.
+    # Never opens DRM or runs privileged compositor steps.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch pinned upstream PocketJS v0.17.0
+        uses: actions/checkout@v4
+        with:
+          repository: pocket-nexus/pocketjs
+          ref: 83c6cac996237968785125118b543cd4e339254c
+          path: pocketjs-upstream
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.98.1'
+      - name: Install upstream PocketJS dependencies
+        working-directory: pocketjs-upstream
+        run: bun install --frozen-lockfile
+      - name: Compile, admit and run real PocketJS Linux UI headlessly
+        run: bash tools/verify-pocketjs.sh "$PWD/pocketjs-upstream"
+
   native-drm-seat:
     strategy:
       fail-fast: false
