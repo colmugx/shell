@@ -180,7 +180,7 @@ jobs:
       - name: Install software headless Wayland compositor for native PocketJS XDG
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends sway wtype
+          sudo apt-get install -y --no-install-recommends sway wtype libxkbcommon-dev
       - name: Compile, admit and run real PocketJS Linux UI headlessly
         run: bash tools/verify-pocketjs.sh "$PWD/pocketjs-upstream"
 

@@ -61,7 +61,8 @@ def main():
           'libc = "0.2.191"\n'
           'wayland-client = "0.31"\n'
           'wayland-protocols = { version = "0.32", features = ["client"] }\n'
-          'tempfile = "3"')
+          'tempfile = "3"\n'
+          'xkbcommon = "0.9"')
     apply(main_file,
           'mod pokshell_svc;',
           'mod pokshell_svc;\nmod pokshell_wayland;')

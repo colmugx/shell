@@ -430,3 +430,21 @@ Rust service provider's acknowledgement and real pokshelld status.
 This is a **software virtual keyboard** test, not hardware-controller
 hotplug, power, suspend, or measured input latency. The native
 Smithay/KMS path remains independently unaccepted.
+
+### P2-J05 XKB keyboard map compliance
+
+CI's first real virtual-keyboard experiment uncovered a RefCell borrow
+panic, which was fixed by ending the immutable EventQueue borrow before
+mutable dispatch. The subsequent protocol review found that wtype's
+virtual keyboard can use a non-evdev XKB keycode mapping; interpreting
+wl_keyboard::key values directly as evdev numeric constants was wrong.
+
+The PocketJS Wayland client now accepts a bounded (<= 1 MiB) XKB v1
+wl_keyboard.keymap from the actual compositor and resolves keysym via
+libxkbcommon after adding Wayland's mandated offset of 8. It tracks the
+Wayland modifiers group and maps semantic arrows, Return, Space, Escape
+and BackSpace into official PocketJS BTN values. Raw evdev keycodes
+are only accepted if the server explicitly advertises NoKeymap. Invalid
+maps fail closed. Short taps remain latched until one PocketJS tick.
+The existing Headless Sway wtype test is retained as a real-input gate;
+this does not establish gamepad HID mappings or physical controller focus.

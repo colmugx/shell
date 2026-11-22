@@ -4,13 +4,14 @@
 use pocket_drivers::{InputClasses, InputFrameBuilder, InputSource, Rect};
 use pocket_linux_drm::{Display, Scanout};
 use std::{
-    env, fs::File, io::{self, Seek, SeekFrom, Write},
+    env, fs::File, io::{self, Read, Seek, SeekFrom, Write},
     os::{fd::{AsFd, AsRawFd}, unix::{fs::FileTypeExt, net::UnixStream}},
     path::PathBuf,
     cell::RefCell,
     rc::Rc,
     sync::{atomic::{AtomicU32, Ordering}, Arc},
 };
+use xkbcommon::xkb;
 use wayland_client::{
     delegate_noop,
     globals::{registry_queue_init, GlobalListContents},
@@ -31,6 +32,8 @@ const CIRCLE: u32 = 0x2000;
 const CROSS: u32 = 0x4000;
 const SHM_LIMIT: usize = 32 * 1024 * 1024;
 
+/// Only used when the server explicitly advertises NoKeymap (raw evdev).
+/// On normal Wayland connections its XKB keymap is authoritative.
 fn key_button(code: u32) -> u32 {
     match code {
         103 => UP, 106 => RIGHT, 108 => DOWN, 105 => LEFT,
@@ -87,6 +90,19 @@ impl ButtonLatch {
     }
     fn sample(&self) -> u32 {
         self.held.load(Ordering::Relaxed) | self.pressed.swap(0, Ordering::Relaxed)
+    }
+}
+
+fn keysym_button(sym: u32) -> u32 {
+    match sym {
+        0xff52 => UP,                    // XK_Up
+        0xff53 => RIGHT,                 // XK_Right
+        0xff54 => DOWN,                  // XK_Down
+        0xff51 => LEFT,                  // XK_Left
+        0xff0d | 0xff8d => CIRCLE,       // Return or KP_Enter
+        0x20 => CROSS,                   // Space
+        0xff1b | 0xff08 => TRIANGLE,     // Escape or BackSpace
+        _ => 0,
     }
 }
 
@@ -155,6 +171,8 @@ struct State {
     released: [bool; 2],
     keyboard: Option<wl_keyboard::WlKeyboard>,
     buttons: Arc<ButtonLatch>,
+    xkb_state: Option<xkb::State>,
+    raw_keycodes: bool,
 }
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
     fn event(_: &mut Self, _: &wl_registry::WlRegistry, _: wl_registry::Event,
@@ -214,6 +232,8 @@ impl Dispatch<wl_seat::WlSeat, ()> for State {
             } else if !enabled {
                 if let Some(keyboard) = s.keyboard.take() { keyboard.release(); }
                 s.buttons.clear();
+                s.xkb_state = None;
+                s.raw_keycodes = false;
             }
         }
     }
@@ -222,8 +242,53 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
     fn event(s: &mut Self, _: &wl_keyboard::WlKeyboard, event: wl_keyboard::Event,
         _: &(), _: &Connection, _: &QueueHandle<Self>) {
         match event {
+            wl_keyboard::Event::Keymap { format, fd, size } => {
+                // Real Wayland keycodes index the *supplied* XKB keymap, and
+                // virtual-keyboard clients may generate different numbers.
+                s.buttons.clear();
+                s.xkb_state = None;
+                s.raw_keycodes = matches!(format,
+                    WEnum::Value(wl_keyboard::KeymapFormat::NoKeymap));
+                if !matches!(format, WEnum::Value(wl_keyboard::KeymapFormat::XkbV1)) {
+                    return;
+                }
+                if !(1..=1024 * 1024).contains(&size) {
+                    eprintln!("pokshell-pocketjs-wayland: rejecting oversized keyboard map");
+                    return;
+                }
+                let mut bytes = vec![0u8; size as usize];
+                if File::from(fd).read_exact(&mut bytes).is_err() {
+                    eprintln!("pokshell-pocketjs-wayland: unreadable keyboard map");
+                    return;
+                }
+                let Ok(source) = String::from_utf8(bytes) else {
+                    eprintln!("pokshell-pocketjs-wayland: invalid keyboard map encoding");
+                    return;
+                };
+                let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+                let Some(map) = xkb::Keymap::new_from_string(
+                    &context, source.trim_end_matches('\0').to_owned(),
+                    xkb::KEYMAP_FORMAT_TEXT_V1, xkb::KEYMAP_COMPILE_NO_FLAGS)
+                else {
+                    eprintln!("pokshell-pocketjs-wayland: keyboard map rejected");
+                    return;
+                };
+                s.xkb_state = Some(xkb::State::new(&map));
+                eprintln!("pokshell-pocketjs-wayland: xkb_keymap_ready=yes");
+            }
+            wl_keyboard::Event::Modifiers {
+                mods_depressed, mods_latched, mods_locked, group, ..
+            } => {
+                if let Some(state) = &mut s.xkb_state {
+                    state.update_mask(mods_depressed, mods_latched, mods_locked, 0, 0, group);
+                }
+            }
             wl_keyboard::Event::Key { key, state, .. } => {
-                let mask = key_button(key);
+                let mask = if let Some(xkb) = &s.xkb_state {
+                    keysym_button(xkb.key_get_one_sym(xkb::Keycode::new(key + 8)).raw())
+                } else if s.raw_keycodes {
+                    key_button(key)
+                } else { 0 };
                 if mask != 0 {
                     let down = matches!(state, WEnum::Value(wl_keyboard::KeyState::Pressed));
                     s.buttons.update(mask, down);
@@ -334,7 +399,7 @@ pub fn open(size: [u32; 2], display: &str) -> io::Result<(Display<WaylandScanout
     let mut state = State {
         surface, xdg, size, configured: false, closed: false,
         frame_done: false, released: [true, true], keyboard: None,
-        buttons: buttons.clone(),
+        buttons: buttons.clone(), xkb_state: None, raw_keycodes: false,
     };
     // XDG configure handshake requires the initial commit with no buffer.
     state.surface.commit();
@@ -383,6 +448,18 @@ mod tests {
         assert_eq!(key_button(1), TRIANGLE);
         assert_eq!(key_button(57), CROSS);
         assert_eq!(key_button(40), 0);
+    }
+    #[test]
+    fn xkb_keysyms_work_independently_of_virtual_keyboard_keycodes() {
+        assert_eq!(keysym_button(0xff54), DOWN);
+        assert_eq!(keysym_button(0xff52), UP);
+        assert_eq!(keysym_button(0xff51), LEFT);
+        assert_eq!(keysym_button(0xff53), RIGHT);
+        assert_eq!(keysym_button(0xff0d), CIRCLE);
+        assert_eq!(keysym_button(0xff8d), CIRCLE);
+        assert_eq!(keysym_button(0xff1b), TRIANGLE);
+        assert_eq!(keysym_button(0x20), CROSS);
+        assert_eq!(keysym_button(0), 0);
     }
     #[test]
     fn rapid_keyboard_taps_are_delivered_once_and_leave_clears_focus() {
