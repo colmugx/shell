@@ -116,13 +116,21 @@ with tempfile.TemporaryDirectory(prefix="pokshell-pocketjs-session-ci-") as td:
             return result.stdout
         command("swaymsg", "-s", str(sway_sockets[0]),
                 '[app_id="org.pokshell.system-ui"] focus')
-        command("wtype", "-k", "Down", "-k", "Return")
-        # UI focus may rebuild between the home and library screens; use a
-        # separate event batch to ensure the native page transition landed.
-        until(lambda: "keycode=108" in content() and "keycode=28" in content(),
-              session, session_log, "Wayland keyboard events delivered")
+        # wtype creates its own virtual keyboard with a synthetic XKB
+        # keymap: its numeric wl_keyboard keycodes are NOT evdev codes.
+        # Prime its keymap, allow individual guest ticks between keys, and
+        # assert PocketJS button masks instead of raw keycode numbers.
+        def navigate():
+            command("wtype", "-M", "shift", "-m", "shift", "-s", "80",
+                    "-k", "Down", "-s", "80", "-k", "Return")
+        navigate()
+        until(lambda: "mask=0x40 pressed=true" in content()
+                    and "mask=0x2000 pressed=true" in content(),
+              session, session_log, "XKB-translated Wayland buttons delivered")
+        # UI focus may rebuild between Home and Library. Allow one guest
+        # render/tick cycle before selecting the preconfigured game.
         time.sleep(.2)
-        command("wtype", "-k", "Down", "-k", "Return")
+        navigate()
         until(lambda: "pokshell-svc: action=GAME START accepted" in content(),
               session, session_log, "PocketJS keyboard-driven game start")
         until(lambda: "mode=game" in ipc(ipc_path, "STATUS"),
