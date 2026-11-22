@@ -409,3 +409,24 @@ PocketJS XDG/SHM frames and real session STATUS, commands game start,
 overlay toggle, game stop, verifies Home continuity, then confirms only
 pokshell-owned children and sockets are cleaned up.
 No physical controller or power-state support is implied.
+
+### P2-J05 Wayland input dispatch + short-tap latch (2026-11-22)
+
+PocketJS Wayland now nonblockingly flushes and drains Wayland protocol
+events on every upstream InputSource::poll call, instead of only when the
+XDG render path is blocked waiting for a wl_surface.frame callback.
+Key press/release events are latched across a single runtime input tick,
+allowing a fast tap to survive even when the key is already released
+before the next QuickJS frame. On wl_keyboard Leave or seat capability
+loss, all keys are cleared. The official PocketJS BTN bits remain used.
+The Wayland event queue is shared with the scanout using single-threaded
+reference-counted borrowing; no new device thread, root permissions, or
+DRM master is introduced.
+
+Headless Sway CI now uses its virtual keyboard protocol via the wtype
+tool to send actual keyboard input to the PocketJS XDG client. It tests
+the navigation action Home -> Library -> game.start, and inspects the
+Rust service provider's acknowledgement and real pokshelld status.
+This is a **software virtual keyboard** test, not hardware-controller
+hotplug, power, suspend, or measured input latency. The native
+Smithay/KMS path remains independently unaccepted.

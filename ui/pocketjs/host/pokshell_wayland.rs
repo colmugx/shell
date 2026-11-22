@@ -5,8 +5,10 @@ use pocket_drivers::{InputClasses, InputFrameBuilder, InputSource, Rect};
 use pocket_linux_drm::{Display, Scanout};
 use std::{
     env, fs::File, io::{self, Seek, SeekFrom, Write},
-    os::{fd::AsFd, unix::{fs::FileTypeExt, net::UnixStream}},
+    os::{fd::{AsFd, AsRawFd}, unix::{fs::FileTypeExt, net::UnixStream}},
     path::{Path, PathBuf},
+    cell::RefCell,
+    rc::Rc,
     sync::{atomic::{AtomicU32, Ordering}, Arc},
 };
 use wayland_client::{
@@ -63,12 +65,79 @@ fn explicit_socket(name: &str) -> io::Result<PathBuf> {
     Ok(path)
 }
 
-pub struct WaylandInput(Arc<AtomicU32>);
+/// Shared keyboard state. A press+release between logical ticks is latched
+/// for one sample, avoiding lost button edges on fast virtual/physical keys.
+#[derive(Default)]
+struct ButtonLatch {
+    held: AtomicU32,
+    pressed: AtomicU32,
+}
+impl ButtonLatch {
+    fn update(&self, mask: u32, pressed: bool) {
+        if pressed {
+            self.held.fetch_or(mask, Ordering::Relaxed);
+            self.pressed.fetch_or(mask, Ordering::Relaxed);
+        } else {
+            self.held.fetch_and(!mask, Ordering::Relaxed);
+        }
+    }
+    fn clear(&self) {
+        self.held.store(0, Ordering::Relaxed);
+        self.pressed.store(0, Ordering::Relaxed);
+    }
+    fn sample(&self) -> u32 {
+        self.held.load(Ordering::Relaxed) | self.pressed.swap(0, Ordering::Relaxed)
+    }
+}
+
+pub struct WaylandInput {
+    connection: Connection,
+    queue: Rc<RefCell<EventQueue<State>>>,
+    state: Rc<RefCell<State>>,
+    buttons: Arc<ButtonLatch>,
+}
 impl InputSource for WaylandInput {
     fn classes(&self) -> InputClasses { InputClasses::BUTTONS }
     fn poll(&mut self, frame: &mut InputFrameBuilder) {
-        frame.buttons |= self.0.load(Ordering::Relaxed);
+        // Reading the socket at each logical tick is necessary even when the
+        // renderer did not submit a frame. Never block on input: the upstream
+        // PocketJS TickSchedule owns the cadence and presentation timing.
+        if let Err(err) = poll_wayland(&self.connection, &self.queue, &self.state) {
+            eprintln!("pokshell-pocketjs-wayland: keyboard dispatch failed: {err}");
+            self.buttons.clear();
+            return;
+        }
+        frame.buttons |= self.buttons.sample();
     }
+}
+
+fn poll_wayland(
+    conn: &Connection,
+    queue: &Rc<RefCell<EventQueue<State>>>,
+    state: &Rc<RefCell<State>>,
+) -> io::Result<()> {
+    conn.flush().map_err(io::Error::other)?;
+    // Bound each tick to one nonblocking read so a malicious/very active
+    // server cannot starve the Guest's rendering and simulation.
+    queue.borrow_mut().dispatch_pending(&mut state.borrow_mut())
+        .map_err(io::Error::other)?;
+    if let Some(guard) = queue.borrow().prepare_read() {
+        let mut fd = libc::pollfd {
+            fd: guard.connection_fd().as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: fd refers to the live Wayland connection. A zero-timeout
+        // poll does not read, mutate or close this fd.
+        let ready = unsafe { libc::poll(&mut fd, 1, 0) };
+        if ready < 0 { return Err(io::Error::last_os_error()); }
+        if ready > 0 {
+            guard.read().map_err(io::Error::other)?;
+            queue.borrow_mut().dispatch_pending(&mut state.borrow_mut())
+                .map_err(io::Error::other)?;
+        }
+    }
+    Ok(())
 }
 
 struct State {
@@ -80,7 +149,7 @@ struct State {
     frame_done: bool,
     released: [bool; 2],
     keyboard: Option<wl_keyboard::WlKeyboard>,
-    buttons: Arc<AtomicU32>,
+    buttons: Arc<ButtonLatch>,
 }
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
     fn event(_: &mut Self, _: &wl_registry::WlRegistry, _: wl_registry::Event,
@@ -139,7 +208,7 @@ impl Dispatch<wl_seat::WlSeat, ()> for State {
                 s.keyboard = Some(seat.get_keyboard(qh, ()));
             } else if !enabled {
                 if let Some(keyboard) = s.keyboard.take() { keyboard.release(); }
-                s.buttons.store(0, Ordering::Relaxed);
+                s.buttons.clear();
             }
         }
     }
@@ -150,13 +219,13 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
         match event {
             wl_keyboard::Event::Key { key, state, .. } => {
                 let mask = key_button(key);
-                if matches!(state, WEnum::Value(wl_keyboard::KeyState::Pressed)) {
-                    s.buttons.fetch_or(mask, Ordering::Relaxed);
-                } else {
-                    s.buttons.fetch_and(!mask, Ordering::Relaxed);
+                if mask != 0 {
+                    let down = matches!(state, WEnum::Value(wl_keyboard::KeyState::Pressed));
+                    s.buttons.update(mask, down);
+                    eprintln!("pokshell-pocketjs-wayland: keycode={key} mask={mask:#x} pressed={down}");
                 }
             }
-            wl_keyboard::Event::Leave { .. } => s.buttons.store(0, Ordering::Relaxed),
+            wl_keyboard::Event::Leave { .. } => s.buttons.clear(),
             _ => {}
         }
     }
@@ -169,8 +238,8 @@ struct Slot {
 }
 pub struct WaylandScanout {
     connection: Connection,
-    queue: EventQueue<State>,
-    state: State,
+    queue: Rc<RefCell<EventQueue<State>>>,
+    state: Rc<RefCell<State>>,
     _toplevel: xdg_toplevel::XdgToplevel,
     _seat: Option<wl_seat::WlSeat>,
     slots: [Slot; 2],
@@ -180,9 +249,10 @@ pub struct WaylandScanout {
 }
 impl WaylandScanout {
     fn dispatch(&mut self) -> io::Result<()> {
-        if self.state.closed { return Err(io::Error::other("Wayland toplevel closed")); }
-        self.queue.blocking_dispatch(&mut self.state).map_err(io::Error::other)?;
-        if self.state.closed { return Err(io::Error::other("Wayland toplevel closed")); }
+        if self.state.borrow().closed { return Err(io::Error::other("Wayland toplevel closed")); }
+        self.queue.borrow_mut().blocking_dispatch(&mut self.state.borrow_mut())
+            .map_err(io::Error::other)?;
+        if self.state.borrow().closed { return Err(io::Error::other("Wayland toplevel closed")); }
         Ok(())
     }
 }
@@ -191,20 +261,23 @@ impl Scanout for WaylandScanout {
         if self.stopped || self.pending || slot >= 2 {
             return Err(io::Error::other("invalid Wayland scanout state"));
         }
-        let size = self.state.size;
+        let size = self.state.borrow().size;
         let expected = (size[0] as usize) * (size[1] as usize) * 4;
         if pixels.len() != expected { return Err(io::Error::other("invalid PocketJS pixel size")); }
-        while !self.state.released[slot] { self.dispatch()?; }
+        while !self.state.borrow().released[slot] { self.dispatch()?; }
         let file = &mut self.slots[slot].file;
         file.seek(SeekFrom::Start(0))?;
         file.write_all(pixels)?;
         file.flush()?;
-        self.state.released[slot] = false;
-        self.state.frame_done = false;
-        self.state.surface.attach(Some(&self.slots[slot].buffer), 0, 0);
-        self.state.surface.damage_buffer(0, 0, size[0] as i32, size[1] as i32);
-        self.state.surface.frame(&self.queue.handle(), ());
-        self.state.surface.commit();
+        {
+            let mut state = self.state.borrow_mut();
+            state.released[slot] = false;
+            state.frame_done = false;
+            state.surface.attach(Some(&self.slots[slot].buffer), 0, 0);
+            state.surface.damage_buffer(0, 0, size[0] as i32, size[1] as i32);
+            state.surface.frame(&self.queue.borrow().handle(), ());
+            state.surface.commit();
+        }
         self.connection.flush().map_err(io::Error::other)?;
         self.pending = true;
         self.frames += 1;
@@ -215,7 +288,7 @@ impl Scanout for WaylandScanout {
     }
     fn wait(&mut self) -> io::Result<()> {
         if !self.pending { return Err(io::Error::other("no pending Wayland frame")); }
-        while !self.state.frame_done { self.dispatch()?; }
+        while !self.state.borrow().frame_done { self.dispatch()?; }
         self.pending = false;
         Ok(())
     }
@@ -252,7 +325,7 @@ pub fn open(size: [u32; 2], display: &str) -> io::Result<(Display<WaylandScanout
     let toplevel = xdg.get_toplevel(&qh, ());
     toplevel.set_title("pokshell • PocketJS".into());
     toplevel.set_app_id("org.pokshell.system-ui".into());
-    let buttons = Arc::new(AtomicU32::new(0));
+    let buttons = Arc::new(ButtonLatch::default());
     let mut state = State {
         surface, xdg, size, configured: false, closed: false,
         frame_done: false, released: [true, true], keyboard: None,
@@ -274,6 +347,14 @@ pub fn open(size: [u32; 2], display: &str) -> io::Result<(Display<WaylandScanout
             wl_shm::Format::Argb8888, &qh, index);
         Ok(Slot { file, _pool: pool, buffer })
     };
+    let queue = Rc::new(RefCell::new(queue));
+    let state = Rc::new(RefCell::new(state));
+    let input = WaylandInput {
+        connection: connection.clone(),
+        queue: Rc::clone(&queue),
+        state: Rc::clone(&state),
+        buttons,
+    };
     let scanout = WaylandScanout {
         connection, queue, state, _toplevel: toplevel, _seat: seat,
         slots: [make_slot(0)?, make_slot(1)?],
@@ -281,7 +362,7 @@ pub fn open(size: [u32; 2], display: &str) -> io::Result<(Display<WaylandScanout
     };
     let output = Display::new(scanout, size)?;
     eprintln!("pokshell-pocketjs-wayland: connected display={display} size={}x{} keyboard=wayland", size[0], size[1]);
-    Ok((output, WaylandInput(buttons)))
+    Ok((output, input))
 }
 
 #[cfg(test)]
@@ -297,6 +378,19 @@ mod tests {
         assert_eq!(key_button(1), TRIANGLE);
         assert_eq!(key_button(57), CROSS);
         assert_eq!(key_button(40), 0);
+    }
+    #[test]
+    fn rapid_keyboard_taps_are_delivered_once_and_leave_clears_focus() {
+        let keys = ButtonLatch::default();
+        keys.update(CIRCLE, true);
+        keys.update(CIRCLE, false);
+        assert_eq!(keys.sample(), CIRCLE, "fast down/up lost between ticks");
+        assert_eq!(keys.sample(), 0, "one tap replayed on next tick");
+        keys.update(DOWN, true);
+        assert_eq!(keys.sample(), DOWN);
+        assert_eq!(keys.sample(), DOWN, "held key does not stay pressed");
+        keys.clear();
+        assert_eq!(keys.sample(), 0, "focus loss must drop stale key state");
     }
     #[test]
     fn rejects_socket_path_escape() {

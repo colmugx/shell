@@ -202,3 +202,10 @@ an existing Sway/ROCKNIX compositor. Home remains running between
 allowlisted game launch/stop/overlay commands. CI uses a real QuickJS
 host and software-headless Sway; hardware input, lifecycle persistence,
 suspend, native KMS and P3/P4 remain open acceptance gates.
+
+P2-J05 input correctness (2026-11-22): the upstream PocketJS tick
+now drains its explicit Wayland socket on every input sample and latches
+fast button taps, preventing idle/no-render key starvation. Headless Sway
+CI uses real Wayland virtual keyboard events to navigate from Home to a
+configured game via PocketJS onPress and native svc commands. Hardware
+controller input, focus leak isolation and idle power remain unverified.

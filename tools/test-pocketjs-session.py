@@ -101,7 +101,30 @@ with tempfile.TemporaryDirectory(prefix="pokshell-pocketjs-session-ci-") as td:
         assert "ui=pocketjs" in content()
         status = ipc(ipc_path, "STATUS")
         assert "mode=home" in status and "pid=none" in status, status
-        assert ipc(ipc_path, "GAME START").startswith("OK GAME START")
+        # Actual virtual-keyboard Wayland protocol events, not raw IPC:
+        # focus the real PocketJS XDG window and press D-pad Down + Circle.
+        # The guest transitions Home -> Library -> Start via onPress,
+        # proving keyboard dispatch during idle frames and the native
+        # PocketJS service path.
+        sway_sockets = sorted(runtime.glob("sway-ipc.*.sock"))
+        assert len(sway_sockets) == 1, sway_sockets
+        keyboard_env = dict(env, WAYLAND_DISPLAY=display)
+        def command(*args):
+            result = subprocess.run(args, env=keyboard_env,
+                                    capture_output=True, text=True, timeout=8)
+            assert result.returncode == 0, (args, result.stdout, result.stderr)
+            return result.stdout
+        command("swaymsg", "-s", str(sway_sockets[0]),
+                '[app_id="org.pokshell.system-ui"] focus')
+        command("wtype", "-k", "Down", "-k", "Return")
+        # UI focus may rebuild between the home and library screens; use a
+        # separate event batch to ensure the native page transition landed.
+        until(lambda: "keycode=108" in content() and "keycode=28" in content(),
+              session, session_log, "Wayland keyboard events delivered")
+        time.sleep(.2)
+        command("wtype", "-k", "Down", "-k", "Return")
+        until(lambda: "pokshell-svc: action=GAME START accepted" in content(),
+              session, session_log, "PocketJS keyboard-driven game start")
         until(lambda: "mode=game" in ipc(ipc_path, "STATUS"),
               session, session_log, "game startup")
         status = ipc(ipc_path, "STATUS")
@@ -123,6 +146,7 @@ with tempfile.TemporaryDirectory(prefix="pokshell-pocketjs-session-ci-") as td:
         assert not ipc_path.exists(), "session IPC leaked"
         assert sway.poll() is None and (runtime/display).is_socket(), (
             "session stole or terminated external Sway")
+        print("PASS P2-J04: real Wayland virtual keyboard navigates PocketJS and starts preconfigured game")
         print("PASS P2-J04: PocketJS Home -> game -> overlay -> Home without session restart")
         print("PASS P2-J04: real PocketJS XDG pixels, service bridge and owned children")
         print("PASS P2-J04: external Sway compositor and its socket survive shutdown")
