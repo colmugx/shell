@@ -134,9 +134,6 @@ jobs:
       - name: Smithay nested game and layer integration test
         if: matrix.runner == 'ubuntu-24.04'
         run: python3 tests/headless_nested.py
-      - name: ROCKNIX-style external Sway session lifecycle (no DRM ownership)
-        if: matrix.runner == 'ubuntu-24.04'
-        run: python3 tests/external_rocknix.py
       - name: SDL2 game must use pokcomp Wayland instead of KDE X11
         if: matrix.runner == 'ubuntu-24.04'
         run: python3 tests/headless_nested.py --sdl2

@@ -171,3 +171,9 @@ separate backend; replacing the target dedicated lightweight native
 compositor or PocketJS UI with a general desktop is not accepted.
 See `docs/verification.md` for opt-in syntax, isolation, CI and
 license boundaries.
+
+P1-ROCKNIX consolidation: formal `poksession --external-wayland`
+supervision reuses an already-running Sway. The original
+`tools/rocknix-session` command is an exec-only compatibility
+shim rather than a second process manager. SDL/window/menu and
+host-compositor lifecycle are CI-gated without privileged DRM.

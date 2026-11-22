@@ -1,171 +1,38 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Opt-in Sway/ROCKNIX compositor-hosted pokshell session.
+"""Compatibility command for existing ROCKNIX scripts.
 
-This process owns ONLY pokshelld and pokshell-layer.  The existing Sway
-server owns DRM/KMS/seat/input and is never started, signalled or removed.
+All process supervision now lives in the Rust poksession binary. This
+wrapper only translates the original command-line spelling. exec() means
+there is no second supervisor, polling loop, or orphan-prone Python parent.
 """
 import argparse
 import os
 from pathlib import Path
-import signal
-import socket
-import stat
-import subprocess
-import sys
-import time
 
 ROOT = Path(__file__).resolve().parent.parent
-DAEMON = ROOT / "rust/target/debug/pokshelld"
-LAYER = ROOT / "graphics/wayland-layer/target/debug/pokshell-layer"
-STOP = False
+SESSION = ROOT / "rust/target/debug/poksession"
 
-
-def stop_requested(_signal, _frame):
-    global STOP
-    STOP = True
-
-
-def display_socket(runtime: Path, name: str) -> Path:
-    if (not runtime.is_absolute() or not runtime.is_dir() or not name or
-            len(name) > 70 or not all(c.isascii() and
-            (c.isalnum() or c in "-_") for c in name)):
-        raise ValueError("display must be an explicit safe socket basename and runtime an absolute directory")
-    path = runtime / name
-    # Do not follow symlinks or unlink existing compositor sockets.
-    if not stat.S_ISSOCK(path.lstat().st_mode):
-        raise ValueError("external Wayland display is not a socket")
-    return path
-
-
-def connect_socket(path: Path):
-    with socket.socket(socket.AF_UNIX) as connection:
-        connection.settimeout(2)
-        connection.connect(str(path))
-
-
-def control(path: Path, command: str) -> str:
-    with socket.socket(socket.AF_UNIX) as conn:
-        conn.settimeout(3)
-        conn.connect(str(path))
-        conn.sendall((command + "\n").encode("ascii"))
-        response = bytearray()
-        while not response.endswith(b"\n") and len(response) < 1024:
-            chunk = conn.recv(1024 - len(response))
-            if not chunk:
-                break
-            response.extend(chunk)
-    if not response.endswith(b"\n"):
-        raise RuntimeError(f"pokshelld response missing newline for {command}")
-    return response.decode("utf-8", "replace").strip()
-
-
-def terminate(child: subprocess.Popen | None, label: str):
-    if child is None or child.poll() is not None:
-        return
-    child.terminate()
-    try:
-        child.wait(timeout=3)
-    except subprocess.TimeoutExpired:
-        child.kill()
-        child.wait(timeout=3)
-    print(f"pokshell-rocknix: stopped owned {label}", flush=True)
-
-
-def run(argv):
-    parser = argparse.ArgumentParser(description="Use an existing Sway/ROCKNIX Wayland server; never own its seat or DRM")
-    parser.add_argument("--display", required=True, help="Explicit existing Wayland socket basename, e.g. wayland-1")
-    parser.add_argument("--game", required=True, type=Path, help="Absolute executable path")
-    parser.add_argument("--game-arg", action="append", default=[], help="Pass one argument to the game")
-    parser.add_argument("--daemon", type=Path, default=DAEMON)
-    parser.add_argument("--layer", type=Path, default=LAYER)
-    parser.add_argument("--socket", type=Path, default=None, help="Private pokshelld IPC path")
-    args = parser.parse_args(argv)
-    if os.geteuid() == 0:
-        parser.error("must be run as the unprivileged Sway/ROCKNIX session user")
-    runtime_value = os.environ.get("XDG_RUNTIME_DIR", "")
-    runtime = Path(runtime_value) if runtime_value else Path(".")
-    if not runtime_value or not runtime.is_absolute() or not runtime.is_dir():
-        parser.error("XDG_RUNTIME_DIR must be an existing absolute directory")
-    try:
-        display_path = display_socket(runtime, args.display)
-        connect_socket(display_path)
-    except (OSError, ValueError) as exc:
-        parser.error(f"external Wayland socket not ready: {exc}")
-    for label, executable in [("game", args.game), ("daemon", args.daemon), ("layer", args.layer)]:
-        if not executable.is_absolute() or not executable.is_file() or not os.access(executable, os.X_OK):
-            parser.error(f"{label} executable unavailable: {executable}")
-    ipc = args.socket if args.socket is not None else runtime / "pokshell.sock"
-    if not ipc.is_absolute() or ipc.parent.resolve() != runtime.resolve():
-        parser.error("IPC socket must be directly inside XDG_RUNTIME_DIR")
-    if ipc.exists() or ipc.is_symlink():
-        parser.error(f"refusing to replace existing IPC path: {ipc}")
-
-    for signum in (signal.SIGINT, signal.SIGTERM):
-        signal.signal(signum, stop_requested)
-    env = os.environ.copy()
-    env.pop("WAYLAND_SOCKET", None)
-    env.pop("DISPLAY", None)
-    env["WAYLAND_DISPLAY"] = args.display
-    env["SDL_VIDEODRIVER"] = "wayland"
-    env["XDG_SESSION_TYPE"] = "wayland"
-    daemon = None
-    layer = None
-    print(f"pokshell-rocknix: attaching to existing Wayland={args.display}; no DRM/seat takeover", flush=True)
-    try:
-        command = [str(args.daemon), "--socket", str(ipc), "--game", str(args.game),
-                   "--game-wayland-display", args.display, "--allow-external-wayland"]
-        for arg in args.game_arg:
-            command += ["--game-arg", arg]
-        daemon = subprocess.Popen(command, env=env, start_new_session=True)
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline and not STOP:
-            if daemon.poll() is not None:
-                raise RuntimeError(f"pokshelld exited before IPC ready: {daemon.returncode}")
-            try:
-                if ipc.is_socket():
-                    reply = control(ipc, "PING")
-                    if reply == "PONG":
-                        break
-            except OSError:
-                pass
-            time.sleep(0.05)
-        else:
-            raise RuntimeError("pokshelld IPC startup timed out or was interrupted")
-        # Keep the daemon and UI on the same explicit Sway display.
-        response = control(ipc, "GAME START")
-        if not response.startswith("OK GAME START"):
-            raise RuntimeError(f"GAME START failed: {response}")
-        print(f"pokshell-rocknix: {response}", flush=True)
-        layer = subprocess.Popen([str(args.layer), "--menu", "--display", args.display,
-                                  "--allow-external-wayland", "--socket", str(ipc)],
-                                 env=env, start_new_session=True)
-        print(f"POKSESSION_READY backend=external-sway display={args.display} ipc={ipc}", flush=True)
-        while not STOP:
-            if daemon.poll() is not None:
-                raise RuntimeError(f"pokshelld exited unexpectedly: {daemon.returncode}")
-            if layer.poll() is not None:
-                raise RuntimeError(f"pokshell-layer exited unexpectedly: {layer.returncode}")
-            status = control(ipc, "STATUS")
-            if "pid=none" in status:
-                print(f"pokshell-rocknix: game ended: {status}", flush=True)
-                return 0
-            time.sleep(0.25)
-        return 0
-    finally:
-        if daemon is not None and daemon.poll() is None:
-            try:
-                control(ipc, "QUIT")  # terminates only the game it owns
-            except (OSError, RuntimeError):
-                pass
-        terminate(layer, "layer")
-        terminate(daemon, "daemon")
-        print("pokshell-rocknix: existing compositor left untouched", flush=True)
-
+def main():
+    parser = argparse.ArgumentParser(
+        description="Attach poksession to an existing Wayland/Sway compositor")
+    parser.add_argument("--display", required=True)
+    parser.add_argument("--game", required=True)
+    parser.add_argument("--game-arg", action="append", default=[])
+    parser.add_argument("--daemon")
+    parser.add_argument("--layer")
+    parser.add_argument("--socket")
+    options = parser.parse_args()
+    args = [str(SESSION), "--external-wayland", options.display,
+            "--game", options.game]
+    for arg in options.game_arg:
+        args += ["--game-arg", arg]
+    for opt in ("daemon", "layer", "socket"):
+        value = getattr(options, opt)
+        if value is not None:
+            args += ["--" + opt, value]
+    # Let Rust perform socket, user, child and inherited environment validation.
+    os.execv(str(SESSION), args)
 
 if __name__ == "__main__":
-    try:
-        sys.exit(run(sys.argv[1:]))
-    except (RuntimeError, OSError) as err:
-        print(f"pokshell-rocknix: {err}", file=sys.stderr)
-        sys.exit(1)
+    main()

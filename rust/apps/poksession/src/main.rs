@@ -47,6 +47,9 @@ struct Options {
     native: bool,
     card: Option<PathBuf>,
     no_dmabuf: bool,
+    /// Explicit, already-running Sway/ROCKNIX Wayland socket basename.
+    /// This mode NEVER starts a compositor or takes DRM/seat ownership.
+    external_wayland: Option<String>,
 }
 
 fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, String> {
@@ -67,6 +70,11 @@ fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Opti
                 opts.ipc_socket = Some(PathBuf::from(args.next().ok_or("--socket requires a path")?)),
             Some("--no-autostart") if !opts.no_autostart => opts.no_autostart = true,
             Some("--native") if !opts.native => opts.native = true,
+            Some("--external-wayland") if opts.external_wayland.is_none() => {
+                let name = args.next().ok_or("--external-wayland requires a socket basename")?;
+                opts.external_wayland = Some(name.to_str()
+                    .ok_or("--external-wayland requires UTF-8")?.to_owned());
+            },
             Some("--no-dmabuf") if !opts.no_dmabuf => opts.no_dmabuf = true,
             Some("--card") if opts.card.is_none() =>
                 opts.card = Some(PathBuf::from(args.next().ok_or("--card requires /dev/dri/cardN")?)),
@@ -86,6 +94,12 @@ fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Opti
     if opts.native && opts.no_autostart {
         return Err("--native requires game autostart until native KMS idle-home rendering is supported".into());
     }
+    if opts.external_wayland.is_some() && (
+        opts.native || opts.card.is_some() || opts.compositor.is_some() ||
+        opts.no_dmabuf || opts.no_autostart
+    ) {
+        return Err("--external-wayland cannot be combined with native/DRM/compositor/idle flags".into());
+    }
     Ok(Some(opts))
 }
 
@@ -96,6 +110,18 @@ fn validate_display(name: &str) -> io::Result<()> {
     {
         return Err(io::Error::new(io::ErrorKind::InvalidData,
             "compositor did not provide a safe pokshell-* display name"));
+    }
+    Ok(())
+}
+
+/// External Wayland mode permits only a *user-specified* socket basename.
+/// No inherited WAYLAND_DISPLAY can select a host compositor implicitly.
+fn validate_external_display(name: &str) -> io::Result<()> {
+    if name.is_empty() || name.len() > 70
+        || !name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput,
+            "--external-wayland requires a safe socket basename, not a path"));
     }
     Ok(())
 }
@@ -421,16 +447,135 @@ fn session(opts: Options) -> io::Result<()> {
     result
 }
 
+/// Use an existing ROCKNIX/Sway Wayland compositor as a compatibility backend.
+/// Keep all child ownership in Rust; do not create/kill the external compositor,
+/// touch libseat/DRM, or replace an existing IPC/Wayland socket.
+fn external_session(opts: Options) -> io::Result<()> {
+    let display = opts.external_wayland.as_deref().expect("explicit external display");
+    validate_external_display(display)?;
+    unsafe extern "C" { fn geteuid() -> u32; }
+    // SAFETY: read-only identity query; DRM and compositor ownership are not requested.
+    if unsafe { geteuid() } == 0 {
+        return Err(io::Error::other("external Sway session requires a non-root user"));
+    }
+    let runtime = env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)
+        .ok_or_else(|| io::Error::other("XDG_RUNTIME_DIR is required"))?;
+    if !runtime.is_absolute() || !runtime.is_dir() {
+        return Err(io::Error::other("XDG_RUNTIME_DIR must be an existing absolute directory"));
+    }
+    let display_socket = runtime.join(display);
+    let meta = fs::symlink_metadata(&display_socket).map_err(|e|
+        io::Error::new(e.kind(), format!("external Wayland socket {}: {e}",
+            display_socket.display())))?;
+    if !meta.file_type().is_socket() {
+        return Err(io::Error::other("external Wayland display must be a socket (no symlink)"));
+    }
+    let _connection = UnixStream::connect(&display_socket).map_err(|e|
+        io::Error::new(e.kind(), format!("external Wayland socket not listening: {e}")))?;
+    let ipc = opts.ipc_socket.unwrap_or_else(|| runtime.join("pokshell.sock"));
+    if !ipc.is_absolute() || ipc.parent() != Some(runtime.as_path()) {
+        return Err(io::Error::other("external IPC socket must be directly inside XDG_RUNTIME_DIR"));
+    }
+    if fs::symlink_metadata(&ipc).is_ok() {
+        return Err(io::Error::new(io::ErrorKind::AlreadyExists,
+            format!("refusing to replace IPC socket {}", ipc.display())));
+    }
+    let (_, default_daemon, default_layer) = paths(false)?;
+    let daemon_path = opts.daemon.unwrap_or(default_daemon);
+    let layer_path = opts.layer.unwrap_or(default_layer);
+    let game = opts.game.expect("required game");
+    for (label, path) in [("daemon", daemon_path.as_path()),
+                           ("layer", layer_path.as_path()),
+                           ("game", game.as_path())] {
+        if !path.is_absolute() {
+            return Err(io::Error::other(format!("{label} executable must be an absolute path")));
+        }
+        validate_program(label, path)?;
+    }
+    let mut daemon: Option<Child> = None;
+    let mut layer: Option<Child> = None;
+    eprintln!("pokshell-session: external-sway display={display} (no DRM/seat takeover)");
+    let result = (|| -> io::Result<()> {
+        let mut command = Command::new(&daemon_path);
+        command.arg("--socket").arg(&ipc)
+            .arg("--game").arg(&game)
+            .arg("--game-wayland-display").arg(display)
+            .arg("--allow-external-wayland")
+            .env("WAYLAND_DISPLAY", display)
+            .env_remove("WAYLAND_SOCKET")
+            .env_remove("DISPLAY")
+            .process_group(0);
+        for arg in &opts.game_args {
+            command.arg("--game-arg").arg(arg);
+        }
+        daemon = Some(command.spawn()?);
+        wait_socket(&ipc, daemon.as_mut().expect("spawned daemon"), "pokshelld")?;
+        let response = send_ipc(&ipc, "GAME START")?;
+        if !response.starts_with("OK GAME START") {
+            return Err(io::Error::other(format!("GAME START rejected: {}", response.trim())));
+        }
+        eprintln!("pokshell-session: external game started ({})", response.trim());
+        layer = Some(Command::new(&layer_path)
+            .arg("--menu").arg("--display").arg(display)
+            .arg("--allow-external-wayland")
+            .arg("--socket").arg(&ipc)
+            .env("WAYLAND_DISPLAY", display)
+            .env_remove("WAYLAND_SOCKET")
+            .env_remove("DISPLAY")
+            .process_group(0)
+            .spawn()?);
+        for _ in 0..10 {
+            if let Some(status) = layer.as_mut().expect("spawned layer").try_wait()? {
+                return Err(io::Error::other(format!("external layer exited during startup: {status}")));
+            }
+            if SHUTDOWN.load(Ordering::Acquire) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        println!("POKSESSION_READY backend=external-sway display={display} ipc={} game={}",
+            ipc.display(), game.display());
+        loop {
+            if SHUTDOWN.load(Ordering::Acquire) {
+                break;
+            }
+            if let Some(status) = daemon.as_mut().expect("spawned daemon").try_wait()? {
+                return Err(io::Error::other(format!("external game daemon exited: {status}")));
+            }
+            if let Some(status) = layer.as_mut().expect("spawned layer").try_wait()? {
+                return Err(io::Error::other(format!("external layer exited: {status}")));
+            }
+            let status = send_ipc(&ipc, "STATUS")?;
+            if status.contains("pid=none") {
+                eprintln!("pokshell-session: external game exited ({})", status.trim());
+                break;
+            }
+            thread::sleep(Duration::from_millis(250));
+        }
+        Ok(())
+    })();
+    if daemon.is_some() {
+        // Only pokshelld's owned game receives QUIT. Never signal Sway.
+        let _ = send_ipc(&ipc, "QUIT");
+    }
+    if let Some(mut child) = layer { stop_child(&mut child, "external layer"); }
+    if let Some(mut child) = daemon { stop_child(&mut child, "external daemon"); }
+    eprintln!("pokshell-session: external compositor untouched");
+    result
+}
+
 fn main() {
     let opts = match parse_options(env::args_os().skip(1)) {
         Ok(Some(opts)) => opts,
         Ok(None) => {
-            println!("poksession [--native [--card /dev/dri/card0]] --game EXECUTABLE [--game-arg ARG] [--no-autostart] [--socket IPC_PATH] [--compositor PATH] [--daemon PATH] [--layer PATH]\\nNested mode: KDE/Wayland host; native mode: active non-root TTY, no KDE. Both own Smithay, pokshelld, and system menu. Ctrl+C stops owned children.");
+            println!("poksession [--native [--card /dev/dri/card0]] | --external-wayland SOCKET] --game EXECUTABLE [--game-arg ARG] [--no-autostart] [--socket IPC_PATH] [--compositor PATH] [--daemon PATH] [--layer PATH]\\nNested/native modes own Smithay. --external-wayland explicitly reuses an existing Sway/ROCKNIX compositor without taking DRM/seat ownership. All modes own only their game, daemon and menu children.");
             return;
         }
         Err(err) => { eprintln!("poksession: {err}"); std::process::exit(2); }
     };
-    if let Err(err) = install_signals().and_then(|()| session(opts)) {
+    if let Err(err) = install_signals().and_then(|()| {
+        if opts.external_wayland.is_some() { external_session(opts) } else { session(opts) }
+    }) {
         eprintln!("poksession: {err}");
         std::process::exit(1);
     }
@@ -454,6 +599,12 @@ mod tests {
         assert!(opts(&["--game", "/bin/sh", "--no-dmabuf"]).is_err());
         assert!(opts(&["--game", "/bin/sh", "--native", "--no-dmabuf", "--no-dmabuf"]).is_err());
         assert!(opts(&["--game", "/bin/sh", "--native", "--no-dmabuf"]).unwrap().unwrap().no_dmabuf);
+        assert!(opts(&["--game", "/bin/sh", "--external-wayland"]).is_err());
+        assert!(opts(&["--game", "/bin/sh", "--native", "--external-wayland", "wayland-1"]).is_err());
+        assert!(opts(&["--game", "/bin/sh", "--external-wayland", "wayland-1", "--compositor", "/bin/sh"]).is_err());
+        assert!(opts(&["--game", "/bin/sh", "--external-wayland", "wayland-1", "--no-dmabuf"]).is_err());
+        assert_eq!(opts(&["--game", "/bin/sh", "--external-wayland", "wayland-1"])
+            .unwrap().unwrap().external_wayland.as_deref(), Some("wayland-1"));
         let p = opts(&["--game", "/usr/games/supertux", "--game-arg", "--fullscreen",
             "--no-autostart"]).unwrap().unwrap();
         assert_eq!(p.game.unwrap(), PathBuf::from("/usr/games/supertux"));
@@ -470,6 +621,14 @@ mod tests {
         assert!(validate_program("game", &missing).is_err());
         assert!(validate_program("game", Path::new("/dev/null")).is_err());
         assert!(validate_program("game", Path::new("/bin/sh")).is_ok());
+    }
+    #[test]
+    fn explicit_external_display_rejects_paths_and_host_fallback() {
+        assert!(validate_external_display("wayland-1").is_ok());
+        assert!(validate_external_display("rocknix-sway").is_ok());
+        for name in ["", "../wayland-0", "/run/user/1000/wayland-0", "wayland/a", "wayland!", "."] {
+            assert!(validate_external_display(name).is_err(), "{name}");
+        }
     }
     #[test]
     fn nested_server_name_rejects_host_display_and_paths() {

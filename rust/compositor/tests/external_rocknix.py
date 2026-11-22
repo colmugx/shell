@@ -14,7 +14,8 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[3]
-RUNNER = ROOT / "tools/rocknix-session"
+RUNNER = ROOT / "rust/target/debug/poksession"
+WRAPPER = ROOT / "tools/rocknix-session"
 CLIENT = ROOT / "rust/compositor/tests/sdl2_client.py"
 
 
@@ -71,11 +72,16 @@ with tempfile.TemporaryDirectory(prefix="pokshell-rocknix-ci-") as directory:
         wait_for(lambda: bool(sockets()), sway, sway_log, "external Sway")
         display = sockets()[0]
         assert sway.poll() is None
+        # Command-line compatibility remains available, but the Rust program
+        # is now the only lifecycle owner.
+        wrapper_help = subprocess.run([sys.executable, str(WRAPPER), "--help"],
+                                     capture_output=True, text=True)
+        assert wrapper_help.returncode == 0, wrapper_help.stderr
         # These inherited host variables must not escape to the game.
         hosted_env = dict(sway_env, WAYLAND_DISPLAY="wayland-nonexistent",
                           WAYLAND_SOCKET="999999", DISPLAY=":77")
         session = spawn(
-            [sys.executable, str(RUNNER), "--display", display,
+            [str(RUNNER), "--external-wayland", display,
              "--game", sys.executable, "--game-arg", str(CLIENT)],
             hosted_env, session_log,
         )
