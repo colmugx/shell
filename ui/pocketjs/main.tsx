@@ -46,6 +46,11 @@ function Shell() {
       <Show when={page() === "home"}>
         <View class="flex-col gap-3 grow">
           <Text class="text-lg text-white font-bold">Home</Text>
+          <View class="rounded-xl bg-blue-700 p-4 flex-col gap-2"
+                focusable onPress={() => send("game.start")}>
+            <Text class="text-lg text-white font-bold">Play configured game</Text>
+            <Text class="text-sm text-white">CIRCLE to launch · no custom executables</Text>
+          </View>
           <View class="flex-row gap-3">
             <View class="rounded-xl bg-blue-600 p-4 flex-col gap-2 grow" focusable onPress={() => setPage("library")}>
               <Text class="text-lg text-white font-bold">Library</Text>

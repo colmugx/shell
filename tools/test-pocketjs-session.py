@@ -127,10 +127,9 @@ with tempfile.TemporaryDirectory(prefix="pokshell-pocketjs-session-ci-") as td:
         until(lambda: "mask=0x40 pressed=true" in content()
                     and "mask=0x2000 pressed=true" in content(),
               session, session_log, "XKB-translated Wayland buttons delivered")
-        # UI focus may rebuild between Home and Library. Allow one guest
-        # render/tick cycle before selecting the preconfigured game.
-        time.sleep(.2)
-        navigate()
+        # The first Home focus target is the launch tile. The second
+        # navigation batch would instead move focus away; require the
+        # initial D-pad -> CIRCLE path itself to invoke the service.
         until(lambda: "pokshell-svc: action=GAME START accepted" in content(),
               session, session_log, "PocketJS keyboard-driven game start")
         until(lambda: "mode=game" in ipc(ipc_path, "STATUS"),

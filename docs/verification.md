@@ -448,3 +448,13 @@ are only accepted if the server explicitly advertises NoKeymap. Invalid
 maps fail closed. Short taps remain latched until one PocketJS tick.
 The existing Headless Sway wtype test is retained as a real-input gate;
 this does not establish gamepad HID mappings or physical controller focus.
+
+### P2-J05 Home quick-launch tile (2026-11-22)
+
+The PocketJS Home now exposes the configured game's launch as its first
+focusable card, avoiding a multi-screen focus reset before a game can
+start. The key-driven acceptance test requires a genuine Wayland virtual
+keyboard D-pad Down -> Circle input to invoke the actual guest-side
+onPress and restricted native game.start service. The Library page and
+its existing Start/Stop controls remain available. This is not arbitrary
+path execution; the configured game still comes from Rust poksession.
