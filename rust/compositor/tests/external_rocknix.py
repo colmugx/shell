@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[3]
 RUNNER = ROOT / "rust/target/debug/poksession"
 WRAPPER = ROOT / "tools/rocknix-session"
 CLIENT = ROOT / "rust/compositor/tests/sdl2_client.py"
+POKCTL = ROOT / "rust/target/debug/pokctl"
 
 
 def spawn(argv, env, log):
@@ -96,6 +97,45 @@ with tempfile.TemporaryDirectory(prefix="pokshell-rocknix-ci-") as directory:
             lambda: "pokshell-sdl: shm_surface_submitted" in
             session_log.read_text(errors="replace"),
             session, session_log, "SDL2 window SHM frame")
+        # P1-N06 protocol-focus contract: the game PID must stay alive while
+        # the menu requests Exclusive on OPEN and None on CLOSE. No virtual
+        # hardware keyboard is injected, so physical leakage stays unverified.
+        def control(*parts):
+            result = subprocess.run(
+                [str(POKCTL), "--socket", str(runtime / "pokshell.sock"), *parts],
+                env=hosted_env, capture_output=True, text=True, timeout=5,
+            )
+            assert result.returncode == 0, (result.args, result.stdout, result.stderr)
+            return result.stdout
+
+        status = control("STATUS")
+        assert "mode=game" in status, status
+        game_pid = next(p for p in status.split() if p.startswith("pid="))
+        assert game_pid != "pid=none", status
+        assert "OK OVERLAY OPEN" in control("OVERLAY", "OPEN")
+        wait_for(
+            lambda: "pokshell-layer keyboard_policy=exclusive overlay_visible=1" in
+            session_log.read_text(errors="replace"),
+            session, session_log, "visible menu exclusive focus request")
+        wait_for(
+            lambda: "pokshell-layer buffer committed visible=1" in
+            session_log.read_text(errors="replace"),
+            session, session_log, "menu visible frame")
+        assert game_pid in control("STATUS"), "opening menu changed game PID"
+        assert "overlay=1" in control("STATUS")
+        assert "OK OVERLAY CLOSED" in control("OVERLAY", "CLOSE")
+        wait_for(
+            lambda: "pokshell-layer keyboard_policy=none overlay_visible=0" in
+            session_log.read_text(errors="replace").split(
+                "pokshell-layer keyboard_policy=exclusive overlay_visible=1", 1)[-1],
+            session, session_log, "hidden menu releases keyboard request")
+        wait_for(
+            lambda: "pokshell-layer buffer committed visible=0" in
+            session_log.read_text(errors="replace").split(
+                "pokshell-layer buffer committed visible=1", 1)[-1],
+            session, session_log, "hidden menu transparent frame")
+        assert game_pid in control("STATUS"), "closing menu changed game PID"
+        assert "overlay=0" in control("STATUS")
         session.send_signal(signal.SIGTERM)
         session.wait(timeout=8)
         assert session.returncode == 0, session_log.read_text()
@@ -105,6 +145,7 @@ with tempfile.TemporaryDirectory(prefix="pokshell-rocknix-ci-") as directory:
         print("PASS: existing Sway serves SDL2 game and pokshell layer shell")
         print("PASS: external Sway socket survives session termination")
         print("PASS: only pokshell-owned children/IPC are removed")
+        print("PASS: overlay open/close toggles focus request and does not restart game")
     finally:
         terminate(session)
         terminate(sway)

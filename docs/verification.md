@@ -299,3 +299,17 @@ lifecycle code. The x86-64 headless Sway integration test invokes Rust
 poksession directly and asserts SDL2 SHM submission, layer configure and
 that external Sway survives after pokshell shutdown. Physical ROCKNIX
 graphics and real gamepad behavior remain unverified.
+
+### P1-N06 external Sway overlay focus contract (2026-11-22)
+
+The layer menu now has a pure, unit-tested focus policy:
+invisible => KeyboardInteractivity::None; visible menu => Exclusive;
+visible non-menu interactive layer => OnDemand. A local log marker
+records each transition on a committed surface. This describes a protocol
+request, not proof that actual keyboard/gamepad events were isolated.
+
+The headless Sway integration test now sends OVERLAY OPEN/CLOSE through
+pokctl, verifies visible/transparent SHM frames and focus-policy
+transitions, and proves that the supervised game's PID remains unchanged.
+This enables upper-layer UI integration without treating real input leakage
+as validated. A hardware keyboard/controller test still gates P1-N06.

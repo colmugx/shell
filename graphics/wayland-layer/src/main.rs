@@ -170,6 +170,17 @@ struct App {
     drawn: Option<(bool, usize)>,
 }
 
+/// The compositor (Sway or Smithay) owns keyboard routing. The menu
+/// requests exclusive focus only while it is actually visible; idle layer
+/// surfaces must never retain or acquire game keyboard events.
+fn keyboard_policy(visible: bool, is_menu: bool) -> zwlr_layer_surface_v1::KeyboardInteractivity {
+    match (visible, is_menu) {
+        (false, _) => zwlr_layer_surface_v1::KeyboardInteractivity::None,
+        (true, true) => zwlr_layer_surface_v1::KeyboardInteractivity::Exclusive,
+        (true, false) => zwlr_layer_surface_v1::KeyboardInteractivity::OnDemand,
+    }
+}
+
 impl App {
     fn allocate(&mut self, qh: &QueueHandle<Self>) -> io::Result<()> {
         let width = self.width;
@@ -301,15 +312,13 @@ impl App {
             self.surface.set_input_region(Some(&region));
             region.destroy();
             if self.keyboard_interactive {
-                self.layer.set_keyboard_interactivity(if !visible {
-                    zwlr_layer_surface_v1::KeyboardInteractivity::None
-                } else if self.menu.is_some() {
-                    // Game system menu obtains keyboard focus without
-                    // requiring a right-click to activate it.
-                    zwlr_layer_surface_v1::KeyboardInteractivity::Exclusive
-                } else {
-                    zwlr_layer_surface_v1::KeyboardInteractivity::OnDemand
-                });
+                let is_menu = self.menu.is_some();
+                self.layer.set_keyboard_interactivity(keyboard_policy(visible, is_menu));
+                // This is a local request marker, NOT proof that a hardware
+                // keyboard event was routed correctly by the compositor.
+                eprintln!("pokshell-layer keyboard_policy={} overlay_visible={}",
+                    if !visible { "none" } else if is_menu { "exclusive" } else { "on-demand" },
+                    u8::from(visible));
             }
         }
         let buffer = if !visible { self.empty.as_ref() }
@@ -565,6 +574,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn focus_policy_is_exclusive_only_for_visible_menu() {
+        use zwlr_layer_surface_v1::KeyboardInteractivity as K;
+        assert_eq!(keyboard_policy(false, true), K::None);
+        assert_eq!(keyboard_policy(false, false), K::None);
+        assert_eq!(keyboard_policy(true, true), K::Exclusive);
+        assert_eq!(keyboard_policy(true, false), K::OnDemand);
+        // Closing then reopening cannot retain exclusive focus while hidden.
+        assert_eq!(keyboard_policy(false, true), K::None);
+    }
     #[test]
     fn rejects_host_wayland_and_path_traversal() {
         let dir = tempfile::tempdir().unwrap();
