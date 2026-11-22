@@ -49,6 +49,15 @@ def main():
           '        runtime.add_provider(Box::new(provider)).map_err(error)?;\n'
           '    }\n'
           '    let path = options\n        .package')
+    # The program adds two *existing upstream workspace* crates as direct
+    # dependencies. PocketJS's build executor insists on --locked: update the
+    # local disposable checkout's lock metadata once before that check.
+    # This does not change or publish anything in pocket-nexus/pocketjs.
+    subprocess.run(
+        ["cargo", "update", "--manifest-path", str(upstream / "Cargo.toml"),
+         "-p", "pocket-linux-kms"],
+        cwd=upstream, check=True,
+    )
     print("PocketJS native OpProvider registered: svcOpen/svcSend/svcPoll (30..32)")
 
 
