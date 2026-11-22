@@ -33,6 +33,14 @@ def wait_for(predicate, process, log_path, label, timeout=20):
     )
 
 
+def read_complete_json(path):
+    """A file can exist before its writer finishes; retry rather than fail."""
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def stop(process):
     if process is None or process.poll() is not None:
         return
@@ -188,10 +196,10 @@ with tempfile.TemporaryDirectory(prefix="pokcomp-nested-") as dirname:
         assert "OK GAME START" in control("GAME", "START")
         if sdl_mode:
             proof_path = runtime / "pokshell-sdl-proof.json"
-            wait_for(
-                proof_path.exists, daemon, daemon_log, "SDL2 Wayland proof",
+            proof = wait_for(
+                lambda: read_complete_json(proof_path),
+                daemon, daemon_log, "complete SDL2 Wayland proof",
             )
-            proof = json.loads(proof_path.read_text())
             assert proof["driver"] == "wayland", proof
             assert proof["socket"] == "pokshell-test", proof
             assert proof["x11"] is None, proof
