@@ -6,7 +6,7 @@ use pocket_linux_drm::{Display, Scanout};
 use std::{
     env, fs::File, io::{self, Seek, SeekFrom, Write},
     os::{fd::{AsFd, AsRawFd}, unix::{fs::FileTypeExt, net::UnixStream}},
-    path::{Path, PathBuf},
+    path::PathBuf,
     cell::RefCell,
     rc::Rc,
     sync::{atomic::{AtomicU32, Ordering}, Arc},
@@ -121,7 +121,12 @@ fn poll_wayland(
     // server cannot starve the Guest's rendering and simulation.
     queue.borrow_mut().dispatch_pending(&mut state.borrow_mut())
         .map_err(io::Error::other)?;
-    if let Some(guard) = queue.borrow().prepare_read() {
+    // The RefCell borrow from prepare_read must end before dispatch_pending
+    // borrows the same event queue mutably. In an if-let condition its
+    // temporary can otherwise live across the entire if body and panic on
+    // the first real keyboard event.
+    let prepared = { queue.borrow().prepare_read() };
+    if let Some(guard) = prepared {
         let mut fd = libc::pollfd {
             fd: guard.connection_fd().as_raw_fd(),
             events: libc::POLLIN,
