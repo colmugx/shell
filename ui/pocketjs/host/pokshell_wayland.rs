@@ -125,7 +125,11 @@ impl InputSource for WaylandInput {
             self.buttons.clear();
             return;
         }
-        frame.buttons |= self.buttons.sample();
+        let sample = self.buttons.sample();
+        if sample != 0 {
+            eprintln!("pokshell-pocketjs-wayland: buttons_sample={sample:#x}");
+        }
+        frame.buttons |= sample;
     }
 }
 

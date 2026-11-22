@@ -130,10 +130,15 @@ with tempfile.TemporaryDirectory(prefix="pokshell-pocketjs-session-ci-") as td:
         # The D-pad and CIRCLE events above prove correct XKB-to-BTN
         # translation, but do not yet prove focus-manager onPress delivery.
         # Exercise a separate official PocketJS onButtonPress(START) action.
-        command("wtype", "-M", "shift", "-m", "shift", "-s", "80",
-                "-k", "F5")
+        # -k emits an almost instantaneous press/release and may destroy its
+        # virtual keyboard before PocketJS samples it. Hold START for several
+        # real QuickJS frames. Also assert input reaches the runtime's
+        # InputSource, not only the Wayland key dispatch callback.
+        command("wtype", "-P", "F5", "-s", "350", "-p", "F5")
         until(lambda: "mask=0x8 pressed=true" in content(),
               session, session_log, "Wayland START button delivered")
+        until(lambda: "buttons_sample=0x8" in content(),
+              session, session_log, "PocketJS runtime sampled START")
         until(lambda: "pokshell-svc: action=GAME START accepted" in content(),
               session, session_log, "PocketJS START shortcut launched game")
         until(lambda: "mode=game" in ipc(ipc_path, "STATUS"),
