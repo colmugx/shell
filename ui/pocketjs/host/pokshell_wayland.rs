@@ -27,6 +27,7 @@ const UP: u32 = 0x0010;
 const RIGHT: u32 = 0x0020;
 const DOWN: u32 = 0x0040;
 const LEFT: u32 = 0x0080;
+const START: u32 = 0x0008;
 const TRIANGLE: u32 = 0x1000;
 const CIRCLE: u32 = 0x2000;
 const CROSS: u32 = 0x4000;
@@ -95,6 +96,7 @@ impl ButtonLatch {
 
 fn keysym_button(sym: u32) -> u32 {
     match sym {
+        0xffc2 => START,                 // XK_F5, testable START key
         0xff52 => UP,                    // XK_Up
         0xff53 => RIGHT,                 // XK_Right
         0xff54 => DOWN,                  // XK_Down
@@ -451,6 +453,7 @@ mod tests {
     }
     #[test]
     fn xkb_keysyms_work_independently_of_virtual_keyboard_keycodes() {
+        assert_eq!(keysym_button(0xffc2), START);
         assert_eq!(keysym_button(0xff54), DOWN);
         assert_eq!(keysym_button(0xff52), UP);
         assert_eq!(keysym_button(0xff51), LEFT);

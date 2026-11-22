@@ -458,3 +458,16 @@ keyboard D-pad Down -> Circle input to invoke the actual guest-side
 onPress and restricted native game.start service. The Library page and
 its existing Start/Stop controls remain available. This is not arbitrary
 path execution; the configured game still comes from Rust poksession.
+
+### P2-J05 PocketJS START button handoff (2026-11-22)
+
+The PocketJS Home now includes a formal BTN.START shortcut to launch
+the preconfigured game from Home or Library using the existing restricted
+session service. This does not grant arbitrary executable path selection.
+For headless Sway CI only, Wayland F5 is mapped to PocketJS START so
+wtype's virtual keyboard can produce the same edge-triggered guest
+input the controller button handler expects. The D-pad and CIRCLE
+keysyms are still asserted, but the prior test did not establish that
+their focusable-tile onPress callback fires; focus navigation remains
+a separate unfinished gate. CI must prove START invokes the real
+pokshelld game-start command through QuickJS/native OpProvider.

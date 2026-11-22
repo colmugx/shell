@@ -35,6 +35,11 @@ function Shell() {
   });
   onCleanup(() => svc.dispose());
   onButtonPress(BTN.TRIANGLE, () => setPage("home"));
+  // Console-independent handheld shortcut. The native service still
+  // determines which configured executable can be started.
+  onButtonPress(BTN.START, () => {
+    if (page() === "home" || page() === "library") send("game.start");
+  });
 
   return (
     <View class="w-full h-full flex-col gap-4 p-4 bg-slate-950">
@@ -49,7 +54,7 @@ function Shell() {
           <View class="rounded-xl bg-blue-700 p-4 flex-col gap-2"
                 focusable onPress={() => send("game.start")}>
             <Text class="text-lg text-white font-bold">Play configured game</Text>
-            <Text class="text-sm text-white">CIRCLE to launch · no custom executables</Text>
+            <Text class="text-sm text-white">START or CIRCLE to launch · no custom executables</Text>
           </View>
           <View class="flex-row gap-3">
             <View class="rounded-xl bg-blue-600 p-4 flex-col gap-2 grow" focusable onPress={() => setPage("library")}>

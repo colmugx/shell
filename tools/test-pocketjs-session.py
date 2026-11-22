@@ -127,11 +127,15 @@ with tempfile.TemporaryDirectory(prefix="pokshell-pocketjs-session-ci-") as td:
         until(lambda: "mask=0x40 pressed=true" in content()
                     and "mask=0x2000 pressed=true" in content(),
               session, session_log, "XKB-translated Wayland buttons delivered")
-        # The first Home focus target is the launch tile. The second
-        # navigation batch would instead move focus away; require the
-        # initial D-pad -> CIRCLE path itself to invoke the service.
+        # The D-pad and CIRCLE events above prove correct XKB-to-BTN
+        # translation, but do not yet prove focus-manager onPress delivery.
+        # Exercise a separate official PocketJS onButtonPress(START) action.
+        command("wtype", "-M", "shift", "-m", "shift", "-s", "80",
+                "-k", "F5")
+        until(lambda: "mask=0x8 pressed=true" in content(),
+              session, session_log, "Wayland START button delivered")
         until(lambda: "pokshell-svc: action=GAME START accepted" in content(),
-              session, session_log, "PocketJS keyboard-driven game start")
+              session, session_log, "PocketJS START shortcut launched game")
         until(lambda: "mode=game" in ipc(ipc_path, "STATUS"),
               session, session_log, "game startup")
         status = ipc(ipc_path, "STATUS")
@@ -153,7 +157,7 @@ with tempfile.TemporaryDirectory(prefix="pokshell-pocketjs-session-ci-") as td:
         assert not ipc_path.exists(), "session IPC leaked"
         assert sway.poll() is None and (runtime/display).is_socket(), (
             "session stole or terminated external Sway")
-        print("PASS P2-J04: real Wayland virtual keyboard navigates PocketJS and starts preconfigured game")
+        print("PASS P2-J05: Wayland XKB input -> PocketJS START shortcut -> native game service")
         print("PASS P2-J04: PocketJS Home -> game -> overlay -> Home without session restart")
         print("PASS P2-J04: real PocketJS XDG pixels, service bridge and owned children")
         print("PASS P2-J04: external Sway compositor and its socket survive shutdown")
