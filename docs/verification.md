@@ -248,3 +248,40 @@ four more known-redundant variants. A later release should replace
 the diagnostic smoke test with a self-reporting first-frame acceptance
 signal from poknative; the script remains temporary, pending user
 acceptance, and the outcome is not yet a native SuperTux pass.
+
+### P1-ROCKNIX external Sway compatibility backend (CI-probed; handheld unverified)
+
+ROCKNIX/distribution (upstream `next` branch) uses a system-level Sway
+service with WLR_BACKENDS=drm,libinput and provides seatd and Wayland
+SDL2 support. See the upstream project at:
+https://github.com/ROCKNIX/distribution/tree/next
+
+Do NOT vendor ROCKNIX image/build scripts or brand artwork. ROCKNIX
+is a distribution, not a Rust crate; upstream components have distinct
+licenses. This original adapter reuses an **already-running** Sway
+Wayland compositor as a temporary compatibility/display backend. It is
+not PocketJS or the target dedicated pokshell KMS compositor.
+
+The explicit external mode is opt-in:
+- `tools/rocknix-session --display wayland-1 --game /usr/games/supertux2`
+  while running as the unprivileged user in an existing ROCKNIX/Sway
+  graphical session (use the actual socket basename as --display).
+- The launcher never starts/stops Sway or calls libseat/DRM; it owns only
+  pokshelld, its game and pokshell-layer. Shutdown terminates owned
+  processes and leaves the compositor/socket intact.
+- `pokshelld --allow-external-wayland` is accepted only alongside an
+  explicit game Wayland display. It pins SDL/GDK/Qt to that socket and
+  removes inherited DISPLAY and WAYLAND_SOCKET.
+- `pokshell-layer --allow-external-wayland --display NAME` permits the
+  opt-in non-pokshell display, without making KDE fallback implicit.
+  The original --menu restriction remains the default.
+- Reject missing/non-socket/symlink/path-traversal endpoints and existing
+  pokshell IPC sockets. Never remove another session's socket.
+
+CI launches a separate **headless Sway** and tests actual SDL2/SHM window
+plus pokshell layer-shell configure, then signals only the launcher
+and checks Sway/socket still alive. This measures protocol compatibility
+and lifecycle, not visible pixels, real input, hardware acceleration or
+ROCKNIX physical-device support. Native Smithay remains the main P1
+long-term graphics owner. The ongoing `tools/tty` script is preserved
+until the native renderer is genuinely accepted.

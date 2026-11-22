@@ -158,3 +158,16 @@ P1-N05 frame pacing: one-in-flight KMS buffer state machine, no repeated
 nested renders when no surfaces commit. Compile/CI and physical idle-power
 measurement are independent gates. Do not claim battery savings before
 reproducible measurements.
+
+### P1 interoperability bridge: ROCKNIX / Sway (2026-11-22)
+
+An optional, explicit external Wayland compatibility backend allows
+pokshell's Rust game supervisor and SHM layer menu to run under
+pre-existing ROCKNIX/Sway graphics/seat services. The bundled tool owns
+no DRM master and never assumes it can stop the compositor. This
+provides a near-term path for real games while the native Smithay
+first-frame/SDL initialization remains unresolved. It must remain a
+separate backend; replacing the target dedicated lightweight native
+compositor or PocketJS UI with a general desktop is not accepted.
+See `docs/verification.md` for opt-in syntax, isolation, CI and
+license boundaries.
