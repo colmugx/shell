@@ -210,3 +210,19 @@ short actionable error; raw logs remain available.
 Protocol-only CI now verifies that a successful SDL2 XDG handshake
 increases the server's dispatched request counter (not merely that
 clients connect). This is not evidence of native KMS scanout.
+
+### P1-N05 backend dispatch counter correction (CI regression)
+
+CI demonstrated that an SDL2 client created a valid XDG toplevel and
+received its configure while Display::dispatch_clients() reported zero.
+The system/libwayland backend's return count is not a reliable count of
+handled protocol requests. Previous TTY summaries with "requests=0" were
+therefore misleading; they do NOT prove zero client requests.
+
+The shared compositor now records a monotonic count of actual XDG,
+layer-shell and wl_surface commit callbacks; native startup reports
+`protocol_callbacks` separately from the renamed
+`backend_dispatch_count`. The headless SDL2 test asserts that this
+protocol callback count increases on actual XDG creation. This still
+does not measure every registry/sync request, but does provide genuine
+server-side protocol progress independent of backend return semantics.

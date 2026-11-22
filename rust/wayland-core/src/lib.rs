@@ -74,6 +74,10 @@ pub struct PokCompositor {
     seen_layer_frame: bool,
     dmabuf_state: DmabufState,
     pending_dmabufs: Vec<(Dmabuf, ImportNotifier)>,
+    /// Monotonic count of actual compositor protocol callbacks.
+    /// Unlike backend dispatch_clients() return values, this is portable
+    /// across the Rust and system libwayland server backends.
+    protocol_callbacks: u64,
 }
 
 impl DmabufHandler for PokCompositor {
@@ -163,6 +167,7 @@ impl XdgShellHandler for PokCompositor {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState { &mut self.xdg_shell_state }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
+        self.protocol_callbacks = self.protocol_callbacks.saturating_add(1);
         eprintln!("pokcomp: new xdg_toplevel");
         // The game-first nested session initially fills its sole output.
         // This is XDG maximized (not DRM/KMS or host desktop fullscreen).
@@ -217,6 +222,7 @@ impl CompositorHandler for PokCompositor {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        self.protocol_callbacks = self.protocol_callbacks.saturating_add(1);
         self.dirty = true;
         on_commit_buffer_handler::<Self>(surface);
         // Layer-shell requires the first configure after an empty initial
@@ -277,6 +283,7 @@ impl WlrLayerShellHandler for PokCompositor {
         namespace: String,
     ) {
         // Only this actual Smithay server can confirm it received the layer.
+        self.protocol_callbacks = self.protocol_callbacks.saturating_add(1);
         eprintln!("pokcomp: new layer_surface namespace={namespace}");
         // The initial wl_surface.commit triggers the Configure handshake.
     }
@@ -542,6 +549,7 @@ impl Server {
         dirty: true, seen_game_frame: false, seen_layer_frame: false,
         dmabuf_state: DmabufState::new(),
         pending_dmabufs: Vec::new(),
+        protocol_callbacks: 0,
     };
     state.seat.add_keyboard(Default::default(), 200, 200)?;
     state.seat.add_pointer();
@@ -601,9 +609,12 @@ impl Server {
     /// Do not modeset an empty initial output until a game has presented a
     /// drawable surface. This avoids replacing the Linux TTY with black.
     pub fn accepted_clients(&self) -> u64 { self.accepted_clients }
-    /// Number of Wayland client protocol requests actually dispatched.
-    /// Connections alone do not prove SDL's registry/sync negotiation ran.
+    /// Backend-reported dispatch count; on the libwayland system backend
+    /// this may remain zero despite actual requests and XDG role creation.
+    /// It is NOT an authoritative request counter.
     pub fn dispatched_requests(&self) -> u64 { self.dispatched_requests }
+    /// Monotonic count of protocol callbacks observed inside this server.
+    pub fn protocol_callbacks(&self) -> u64 { self.state.protocol_callbacks }
 
     pub fn client_counts(&self) -> (usize, usize, usize) {
         (self.state.xdg_shell_state.toplevel_surfaces().len(),

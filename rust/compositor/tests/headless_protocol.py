@@ -76,11 +76,11 @@ with tempfile.TemporaryDirectory(prefix="poknative-wayland-protocol-") as d:
                       server, server_log, "request accounting")
                 import re
                 match = re.search(
-                    r"protocol_harness_xdg_toplevel_seen=yes dispatched_requests=([0-9]+)",
+                    r"protocol_harness_xdg_toplevel_seen=yes protocol_callbacks=([0-9]+) backend_dispatch_count=([0-9]+)",
                     server_log.read_text(errors="replace"),
                 )
                 assert match and int(match.group(1)) > 0, server_log.read_text()
-                print(f"PASS: {variant} SDL init + XDG; dispatched={match.group(1)}")
+                print(f"PASS: {variant} SDL init + XDG; callbacks={match.group(1)} backend_count={match.group(2)}")
             finally:
                 stop(client)
         print("PASS: protocol-only regression ran without DRM/KMS/seat")
