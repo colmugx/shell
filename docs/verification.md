@@ -360,3 +360,27 @@ roundtrip in a software headless runtime, not Wayland presentation,
 gamepad-controlled focus or a remotely hosted UI. The Linux-KMS host
 remains headless-only under this test; never start it against DRM while
 Sway or poknative owns the display.
+
+### P2-J02 compositable PocketJS wl_shm XDG backend (source/CI pending)
+
+The original PocketJS Linux-KMS Rust program gets an opt-in
+`--wayland-display SOCKET` client backend at build time in the disposable
+pinned v0.17.0 checkout. Original code is in
+`ui/pocketjs/host/pokshell_wayland.rs`. It implements the existing
+`pocket_linux_drm::Scanout` trait, using real PocketJS software-rendered
+ARGB8888 pixels, XDG initial configure/ack, and two bounded wl_shm buffers
+with release callbacks and frame callbacks. This is **not** an alternative
+PocketJS interpreter or a DOM substitute.
+
+Unlike direct DRM output, this backend never opens card/fb/evdev devices or
+takes Sway's libseat master. The display is an explicit basename inside
+XDG_RUNTIME_DIR; inherited WAYLAND_SOCKET and path traversal are rejected.
+`--wayland-display` conflicts with --headless/--card/--fb/--input.
+
+Headless Sway CI renders the actual PocketJS app for 12 ticks, verifies
+XDG configuration and wl_shm frame submission, and confirms Sway and
+its Wayland socket survive. Keycode-to-button mappings exist but input
+event pumping and focus under an idle reactive UI **still require
+end-to-end validation**; CI cannot claim usable hardware controller
+navigation or overlay composition over a game. Native Smithay direct
+KMS remains a separate incomplete gate.

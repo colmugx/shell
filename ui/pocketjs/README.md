@@ -46,3 +46,17 @@ It does not yet inject D-pad button events to activate the UI controls.
 No Wayland window can be shown through upstream pocket-linux-kms:
 its DRM/fbdev output is not compositable with Sway. That host bridge
 is separate future development; rendering is not being faked here.
+
+## P2-J02 compositable Wayland output
+
+`ui/pocketjs/host/pokshell_wayland.rs` implements upstream
+PocketJS's existing Rust `pocket_linux_drm::Scanout` trait using Wayland
+XDG Shell + wl_shm, with a bounded pair of CPU frame buffers. It is
+injected into the disposable pinned upstream Linux program by the same
+prepare script as the v0.17 session provider.
+
+In an existing Sway/pokcomp graphical session (normal user), the
+built `pocket-linux-kms --wayland-display SOCKET --package app.pkb`
+uses the explicitly named XDG_RUNTIME_DIR socket, not direct DRM.
+Never pass both Wayland and a native card/fb/input flag. Real
+gamepad focus and fully event-driven idle UI remain unverified.

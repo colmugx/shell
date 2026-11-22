@@ -49,6 +49,52 @@ def main():
           '        runtime.add_provider(Box::new(provider)).map_err(error)?;\n'
           '    }\n'
           '    let path = options\n        .package')
+    # The optional Wayland backend implements upstream DisplayOutput/Scanout
+    # with wl_shm and XDG Shell. It is a normal *client* of Sway/Smithay:
+    # the preexisting compositor remains the sole DRM/seat owner.
+    display_driver = directory / "src/pokshell_wayland.rs"
+    if display_driver.exists():
+        raise RuntimeError("Refusing to replace an existing PocketJS Wayland driver")
+    shutil.copyfile(ROOT / "ui/pocketjs/host/pokshell_wayland.rs", display_driver)
+    apply(cargo,
+          'libc = "0.2.191"',
+          'libc = "0.2.191"\n'
+          'wayland-client = "0.31"\n'
+          'wayland-protocols = { version = "0.32", features = ["client"] }\n'
+          'tempfile = "3"')
+    apply(main_file,
+          'mod pokshell_svc;',
+          'mod pokshell_svc;\nmod pokshell_wayland;')
+    apply(main_file,
+          '    pcm_test: Option<String>,',
+          '    pcm_test: Option<String>,\n    wayland_display: Option<String>,')
+    apply(main_file,
+          '            "--headless" => output.headless = true,',
+          '            "--headless" => output.headless = true,\n'
+          '            "--wayland-display" => {\n'
+          '                output.wayland_display = Some(args.next()\n'
+          '                    .ok_or_else(|| error("missing --wayland-display socket"))?);\n'
+          '            },')
+    apply(main_file,
+          '    Ok(Some(output))',
+          '    if output.wayland_display.is_some() && (output.headless ||\n'
+          '        output.card.is_some() || output.fb.is_some() || !output.inputs.is_empty()) {\n'
+          '        return Err(error("--wayland-display conflicts with DRM/headless options").into());\n'
+          '    }\n'
+          '    Ok(Some(output))')
+    apply(main_file,
+          '    } else {\n        #[cfg(target_os = "linux")]\n        {\n            match pocket_linux_drm::open(',
+          '    } else if let Some(display) = options.wayland_display.as_deref() {\n'
+          '        let (output, input) = pokshell_wayland::open(size, display)?;\n'
+          '        register(&mut runtime, output, size, renderer)?;\n'
+          '        runtime.add_input_source(Box::new(input)).map_err(error)?;\n'
+          '        eprintln!("display: Wayland/XDG wl_shm (external compositor)");\n'
+          '    } else {\n        #[cfg(target_os = "linux")]\n'
+          '        {\n            match pocket_linux_drm::open(')
+
+    apply(main_file,
+          'pocket-linux-kms [--package app.pkb]',
+          'pocket-linux-kms [--package app.pkb] [--wayland-display SOCKET]') 
     # The program adds two *existing upstream workspace* crates as direct
     # dependencies. PocketJS's build executor insists on --locked: update the
     # local disposable checkout's lock metadata once before that check.

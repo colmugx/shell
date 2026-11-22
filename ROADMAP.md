@@ -189,3 +189,9 @@ pokshelld actions, with bounded Unix IPC and no executable/path/power
 control. CI headless runs the actual PocketJS guest against the actual
 Rust daemon; the Wayland-rendered UI and permission-separated plugins
 remain open gates, not finished milestones.
+
+P2-J02 compositable display spike (2026-11-22): an original,
+Wayland-client software Scanout implementation for pinned PocketJS v0.17
+uses XDG + wl_shm double buffering, without taking DRM master.
+Headless Sway protocol presentation is a CI gate; hardware focus,
+controller input and the interactive game/overlay shell remain pending.
