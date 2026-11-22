@@ -169,6 +169,13 @@ run() {
         "$SESSION" --native --card "$CARD" \
         --game "$python_bin" --game-arg "$SDL_TEST" \
         --game-arg --trace-wayland
+    # Avoid four more hardware takeovers when the baseline SDL_Init
+    # handshake already fails. Preserve the first log and summary.
+    if [[ "$(tail -n 1 "$REPORT" | cut -f 2)" != PRESENTED ]]; then
+        printf 'SDL baseline not presented; skipping redundant configurations.\n'
+        cat "$REPORT"
+        return
+    fi
     run_case sdl-shm-no-libdecor 'pokshell-sdl: shm_surface_submitted' \
         "$SESSION" --native --card "$CARD" \
         --game "$python_bin" --game-arg "$SDL_TEST" \

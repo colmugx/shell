@@ -60,6 +60,13 @@ def component():
             "--menu", "--display", DISPLAY, "--socket", str(runtime / "pokshell.sock")
         ], sys.argv
         assert "WAYLAND_SOCKET" not in os.environ
+        # Native startup must request the game before starting the layer.
+        # The game process may not have reached Python's first statement
+        # yet, so wait briefly for its separate marker instead of racing.
+        deadline = time.monotonic() + 3
+        while not (runtime / "mock-game.json").exists() and time.monotonic() < deadline:
+            time.sleep(.03)
+        assert (runtime / "mock-game.json").exists(), "game was not started before native layer"
         record.write_text(json.dumps({"role": role, "pid": os.getpid()}))
         while True:
             time.sleep(1)

@@ -305,6 +305,17 @@ fn session(opts: Options) -> io::Result<()> {
         daemon = Some(process.spawn()?);
         wait_socket(&ipc, daemon.as_mut().expect("spawned"), "pokshelld")?;
 
+        // Start the game first in the native session: the game and its
+        // initial Wayland sync must not depend on a layer-shell client's
+        // startup/configure exchange. The nested harness keeps the original
+        // ordering for its UI compatibility tests.
+        if opts.native && !opts.no_autostart {
+            let response = send_ipc(&ipc, "GAME START")?;
+            if !response.starts_with("OK GAME START") {
+                return Err(io::Error::other(format!("GAME START rejected: {}", response.trim())));
+            }
+            eprintln!("pokshell-session: native game started before layer ({})", response.trim());
+        }
         // Explicit display is mandatory. Host KDE WAYLAND_DISPLAY and
         // WAYLAND_SOCKET cannot redirect the menu to another compositor.
         layer = Some(Command::new(&layer_path)
@@ -321,7 +332,7 @@ fn session(opts: Options) -> io::Result<()> {
             }
             thread::sleep(Duration::from_millis(50));
         }
-        if !opts.no_autostart {
+        if !opts.native && !opts.no_autostart {
             let response = send_ipc(&ipc, "GAME START")?;
             if !response.starts_with("OK GAME START") {
                 return Err(io::Error::other(format!("GAME START rejected: {}", response.trim())));

@@ -226,3 +226,25 @@ layer-shell and wl_surface commit callbacks; native startup reports
 protocol callback count increases on actual XDG creation. This still
 does not measure every registry/sync request, but does provide genuine
 server-side protocol progress independent of backend return semantics.
+
+### P1-N05 native game-first ordering and TTY test short-circuit
+
+UTM screenshot reported SDL_VIDEO_INIT_BLOCKED with callback count=3
+and XDG toplevels=0 for all SDL variants, including SHM-only and
+libdecor-disabled. Those callbacks may be entirely from the system
+layer; they do not establish that SDL received its wl_display.sync
+response. Disabling DMA-BUF and libdecor has not changed the failure.
+
+Native session now sends GAME START to pokshelld before launching the
+system menu client, preventing initial layer-shell configure from being
+an explicit dependency of the game's first Wayland exchange. Nested
+session ordering remains unchanged. A mocked native-session integration
+test proves the actual game process exists before mock-layer starts;
+no DRM master/seat operations occur in CI.
+
+The temporary one-command TTY script now stops after the first failed
+SDL SHM baseline, preserving its log and summary rather than running
+four more known-redundant variants. A later release should replace
+the diagnostic smoke test with a self-reporting first-frame acceptance
+signal from poknative; the script remains temporary, pending user
+acceptance, and the outcome is not yet a native SuperTux pass.
