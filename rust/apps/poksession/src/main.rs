@@ -50,6 +50,10 @@ struct Options {
     /// Explicit, already-running Sway/ROCKNIX Wayland socket basename.
     /// This mode NEVER starts a compositor or takes DRM/seat ownership.
     external_wayland: Option<String>,
+    /// Real PocketJS native runtime and prebuilt .pkb; both required.
+    /// Only supported with an explicit, preexisting Sway Wayland display.
+    pocketjs: Option<PathBuf>,
+    pocketjs_package: Option<PathBuf>,
 }
 
 fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, String> {
@@ -75,6 +79,12 @@ fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Opti
                 opts.external_wayland = Some(name.to_str()
                     .ok_or("--external-wayland requires UTF-8")?.to_owned());
             },
+            Some("--pocketjs") if opts.pocketjs.is_none() =>
+                opts.pocketjs = Some(PathBuf::from(args.next()
+                    .ok_or("--pocketjs requires an absolute runtime executable")?)),
+            Some("--pocketjs-package") if opts.pocketjs_package.is_none() =>
+                opts.pocketjs_package = Some(PathBuf::from(args.next()
+                    .ok_or("--pocketjs-package requires an absolute .pkb file")?)),
             Some("--no-dmabuf") if !opts.no_dmabuf => opts.no_dmabuf = true,
             Some("--card") if opts.card.is_none() =>
                 opts.card = Some(PathBuf::from(args.next().ok_or("--card requires /dev/dri/cardN")?)),
@@ -99,6 +109,12 @@ fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Opti
         opts.no_dmabuf || opts.no_autostart
     ) {
         return Err("--external-wayland cannot be combined with native/DRM/compositor/idle flags".into());
+    }
+    if opts.pocketjs.is_some() != opts.pocketjs_package.is_some() {
+        return Err("--pocketjs and --pocketjs-package are required together".into());
+    }
+    if opts.pocketjs.is_some() && opts.external_wayland.is_none() {
+        return Err("--pocketjs currently requires --external-wayland (no direct DRM takeover)".into());
     }
     Ok(Some(opts))
 }
@@ -450,6 +466,20 @@ fn session(opts: Options) -> io::Result<()> {
 /// Use an existing ROCKNIX/Sway Wayland compositor as a compatibility backend.
 /// Keep all child ownership in Rust; do not create/kill the external compositor,
 /// touch libseat/DRM, or replace an existing IPC/Wayland socket.
+/// Validate bundle admission input before launching any session child.
+fn validate_pocketjs_package(path: &Path) -> io::Result<()> {
+    if !path.is_absolute() || path.extension().is_none_or(|ext| ext != "pkb") {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput,
+            "PocketJS package must be an absolute .pkb file"));
+    }
+    let info = fs::symlink_metadata(path)?;
+    if !info.file_type().is_file() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput,
+            "PocketJS package must be a regular file (no symlink)"));
+    }
+    Ok(())
+}
+
 fn external_session(opts: Options) -> io::Result<()> {
     let display = opts.external_wayland.as_deref().expect("explicit external display");
     validate_external_display(display)?;
@@ -484,6 +514,7 @@ fn external_session(opts: Options) -> io::Result<()> {
     let daemon_path = opts.daemon.unwrap_or(default_daemon);
     let layer_path = opts.layer.unwrap_or(default_layer);
     let game = opts.game.expect("required game");
+    let pocketjs = opts.pocketjs.zip(opts.pocketjs_package);
     for (label, path) in [("daemon", daemon_path.as_path()),
                            ("layer", layer_path.as_path()),
                            ("game", game.as_path())] {
@@ -492,8 +523,13 @@ fn external_session(opts: Options) -> io::Result<()> {
         }
         validate_program(label, path)?;
     }
+    if let Some((runtime_path, bundle)) = &pocketjs {
+        validate_program("pocketjs", runtime_path)?;
+        validate_pocketjs_package(bundle)?;
+    }
     let mut daemon: Option<Child> = None;
     let mut layer: Option<Child> = None;
+    let mut ui: Option<Child> = None;
     eprintln!("pokshell-session: external-sway display={display} (no DRM/seat takeover)");
     let result = (|| -> io::Result<()> {
         let mut command = Command::new(&daemon_path);
@@ -510,11 +546,18 @@ fn external_session(opts: Options) -> io::Result<()> {
         }
         daemon = Some(command.spawn()?);
         wait_socket(&ipc, daemon.as_mut().expect("spawned daemon"), "pokshelld")?;
-        let response = send_ipc(&ipc, "GAME START")?;
-        if !response.starts_with("OK GAME START") {
-            return Err(io::Error::other(format!("GAME START rejected: {}", response.trim())));
+        if pocketjs.is_none() {
+            // Backwards-compatible game-first behavior for the old Sway path.
+            let response = send_ipc(&ipc, "GAME START")?;
+            if !response.starts_with("OK GAME START") {
+                return Err(io::Error::other(format!("GAME START rejected: {}", response.trim())));
+            }
+            eprintln!("pokshell-session: external game started ({})", response.trim());
+        } else {
+            // PocketJS is the system home. The configured game is only
+            // launched when the guest sends an allowlisted GAME START request.
+            eprintln!("pokshell-session: PocketJS home; configured game remains stopped");
         }
-        eprintln!("pokshell-session: external game started ({})", response.trim());
         layer = Some(Command::new(&layer_path)
             .arg("--menu").arg("--display").arg(display)
             .arg("--allow-external-wayland")
@@ -524,17 +567,34 @@ fn external_session(opts: Options) -> io::Result<()> {
             .env_remove("DISPLAY")
             .process_group(0)
             .spawn()?);
+        if let Some((runtime_path, bundle)) = &pocketjs {
+            ui = Some(Command::new(runtime_path)
+                .arg("--wayland-display").arg(display)
+                .arg("--package").arg(bundle)
+                .env("XDG_RUNTIME_DIR", &runtime)
+                .env("WAYLAND_DISPLAY", display)
+                .env("POKSHELL_SESSION_SOCKET", &ipc)
+                .env_remove("WAYLAND_SOCKET")
+                .env_remove("DISPLAY")
+                .process_group(0)
+                .spawn()?);
+            eprintln!("pokshell-session: PocketJS runtime spawned pid={} (render not yet verified)",
+                ui.as_ref().expect("spawned PocketJS").id());
+        }
         for _ in 0..10 {
             if let Some(status) = layer.as_mut().expect("spawned layer").try_wait()? {
                 return Err(io::Error::other(format!("external layer exited during startup: {status}")));
             }
-            if SHUTDOWN.load(Ordering::Acquire) {
-                break;
+            if let Some(child) = ui.as_mut() {
+                if let Some(status) = child.try_wait()? {
+                    return Err(io::Error::other(format!("PocketJS exited during startup: {status}")));
+                }
             }
+            if SHUTDOWN.load(Ordering::Acquire) { break; }
             thread::sleep(Duration::from_millis(50));
         }
-        println!("POKSESSION_READY backend=external-sway display={display} ipc={} game={}",
-            ipc.display(), game.display());
+        println!("POKSESSION_READY backend=external-sway display={display} ipc={} game={} ui={}",
+            ipc.display(), game.display(), if ui.is_some() { "pocketjs" } else { "legacy" });
         loop {
             if SHUTDOWN.load(Ordering::Acquire) {
                 break;
@@ -545,8 +605,13 @@ fn external_session(opts: Options) -> io::Result<()> {
             if let Some(status) = layer.as_mut().expect("spawned layer").try_wait()? {
                 return Err(io::Error::other(format!("external layer exited: {status}")));
             }
+            if let Some(child) = ui.as_mut() {
+                if let Some(status) = child.try_wait()? {
+                    return Err(io::Error::other(format!("PocketJS exited unexpectedly: {status}")));
+                }
+            }
             let status = send_ipc(&ipc, "STATUS")?;
-            if status.contains("pid=none") {
+            if pocketjs.is_none() && status.contains("pid=none") {
                 eprintln!("pokshell-session: external game exited ({})", status.trim());
                 break;
             }
@@ -558,6 +623,8 @@ fn external_session(opts: Options) -> io::Result<()> {
         // Only pokshelld's owned game receives QUIT. Never signal Sway.
         let _ = send_ipc(&ipc, "QUIT");
     }
+    // Shut down clients before their IPC/display provider to avoid use-after-stop.
+    if let Some(mut child) = ui { stop_child(&mut child, "PocketJS"); }
     if let Some(mut child) = layer { stop_child(&mut child, "external layer"); }
     if let Some(mut child) = daemon { stop_child(&mut child, "external daemon"); }
     eprintln!("pokshell-session: external compositor untouched");
@@ -568,7 +635,7 @@ fn main() {
     let opts = match parse_options(env::args_os().skip(1)) {
         Ok(Some(opts)) => opts,
         Ok(None) => {
-            println!("poksession [--native [--card /dev/dri/card0]] | --external-wayland SOCKET] --game EXECUTABLE [--game-arg ARG] [--no-autostart] [--socket IPC_PATH] [--compositor PATH] [--daemon PATH] [--layer PATH]\\nNested/native modes own Smithay. --external-wayland explicitly reuses an existing Sway/ROCKNIX compositor without taking DRM/seat ownership. All modes own only their game, daemon and menu children.");
+            println!("poksession [--native [--card /dev/dri/card0]] | --external-wayland SOCKET [--pocketjs /absolute/runtime --pocketjs-package /absolute/app.pkb]] --game EXECUTABLE [--game-arg ARG] [--socket IPC_PATH] [--daemon PATH] [--layer PATH]\\nPocketJS mode boots to Home and keeps the session alive between game launches; without it, external Sway retains game-first behavior. No mode controls an unrelated compositor.");
             return;
         }
         Err(err) => { eprintln!("poksession: {err}"); std::process::exit(2); }
@@ -605,6 +672,14 @@ mod tests {
         assert!(opts(&["--game", "/bin/sh", "--external-wayland", "wayland-1", "--no-dmabuf"]).is_err());
         assert_eq!(opts(&["--game", "/bin/sh", "--external-wayland", "wayland-1"])
             .unwrap().unwrap().external_wayland.as_deref(), Some("wayland-1"));
+        assert!(opts(&["--game", "/bin/sh", "--pocketjs", "/bin/sh"]).is_err());
+        assert!(opts(&["--game", "/bin/sh", "--pocketjs-package", "/tmp/app.pkb"]).is_err());
+        assert!(opts(&["--game", "/bin/sh", "--pocketjs", "/bin/sh",
+            "--pocketjs-package", "/tmp/app.pkb"]).is_err());
+        assert!(opts(&["--game", "/bin/sh", "--native", "--pocketjs", "/bin/sh",
+            "--pocketjs-package", "/tmp/app.pkb"]).is_err());
+        assert!(opts(&["--game", "/bin/sh", "--external-wayland", "wayland-1",
+            "--pocketjs", "/bin/sh", "--pocketjs-package", "/tmp/app.pkb"]).is_ok());
         let p = opts(&["--game", "/usr/games/supertux", "--game-arg", "--fullscreen",
             "--no-autostart"]).unwrap().unwrap();
         assert_eq!(p.game.unwrap(), PathBuf::from("/usr/games/supertux"));
@@ -621,6 +696,12 @@ mod tests {
         assert!(validate_program("game", &missing).is_err());
         assert!(validate_program("game", Path::new("/dev/null")).is_err());
         assert!(validate_program("game", Path::new("/bin/sh")).is_ok());
+    }
+    #[test]
+    fn pocketjs_bundle_preflight_rejects_paths_and_devices() {
+        assert!(validate_pocketjs_package(Path::new("relative.pkb")).is_err());
+        assert!(validate_pocketjs_package(Path::new("/dev/null")).is_err());
+        assert!(validate_pocketjs_package(Path::new("/tmp/file.txt")).is_err());
     }
     #[test]
     fn explicit_external_display_rejects_paths_and_host_fallback() {

@@ -195,3 +195,10 @@ Wayland-client software Scanout implementation for pinned PocketJS v0.17
 uses XDG + wl_shm double buffering, without taking DRM master.
 Headless Sway protocol presentation is a CI gate; hardware focus,
 controller input and the interactive game/overlay shell remain pending.
+
+P2-J04 integrated PocketJS Home session (2026-11-22): `poksession`
+owns the real PocketJS XDG client, layer menu and daemon while using
+an existing Sway/ROCKNIX compositor. Home remains running between
+allowlisted game launch/stop/overlay commands. CI uses a real QuickJS
+host and software-headless Sway; hardware input, lifecycle persistence,
+suspend, native KMS and P3/P4 remain open acceptance gates.

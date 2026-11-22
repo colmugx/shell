@@ -384,3 +384,28 @@ event pumping and focus under an idle reactive UI **still require
 end-to-end validation**; CI cannot claim usable hardware controller
 navigation or overlay composition over a game. Native Smithay direct
 KMS remains a separate incomplete gate.
+
+### P2-J04 Rust-owned PocketJS Home lifecycle (source; CI pending)
+
+The canonical Rust `poksession` gains an explicit external-Sway PocketJS
+mode: `--external-wayland SOCKET --game /absolute/game --pocketjs
+/absolute/pocket-linux-kms --pocketjs-package /absolute/home.pkb`.
+The PocketJS Linux host uses its existing XDG/wl_shm client and restricted
+`POKSHELL_SESSION_SOCKET` provider. Rust owns exactly the daemon, Layer
+client, game through the daemon, and PocketJS UI child; it never launches,
+stops, unlinks or takes seat/DRM ownership from the external Sway compositor.
+
+By design PocketJS mode starts in `mode=home` and leaves the configured
+game stopped until the allowlisted `GAME START` request. Stopping the game
+returns to Home without terminating poksession or restarting PocketJS.
+Legacy external Sway sessions remain game-first and exit on game end.
+The mandatory .pkb path is an explicit regular absolute file; both
+`--pocketjs` and `--pocketjs-package` must be supplied together.
+Only an explicit external-Wayland session is eligible, not native KMS.
+
+CI launches the actual pinned PocketJS QuickJS/Linux host, an existing
+software-headless Sway, poksession, pokshelld and the layer menu, asserts
+PocketJS XDG/SHM frames and real session STATUS, commands game start,
+overlay toggle, game stop, verifies Home continuity, then confirms only
+pokshell-owned children and sockets are cleaned up.
+No physical controller or power-state support is implied.

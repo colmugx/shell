@@ -60,3 +60,15 @@ built `pocket-linux-kms --wayland-display SOCKET --package app.pkb`
 uses the explicitly named XDG_RUNTIME_DIR socket, not direct DRM.
 Never pass both Wayland and a native card/fb/input flag. Real
 gamepad focus and fully event-driven idle UI remain unverified.
+
+## Canonical PocketJS Home session (P2-J04)
+
+The Rust `poksession` supervisor accepts `--pocketjs` and
+`--pocketjs-package` when `--external-wayland` explicitly names an
+already-running Sway display. It owns the native PocketJS host as a normal
+unprivileged Wayland client, with a bounded session IPC socket.
+In PocketJS mode, games remain stopped until started through the
+allowlisted session bridge, and stopping them returns to Home without
+ending the graphical session. The system layer client remains separate.
+See `tools/test-pocketjs-session.py` for a real QuickJS + Sway + Rust
+lifecycle acceptance test in software headless CI.

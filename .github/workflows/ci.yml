@@ -172,8 +172,11 @@ jobs:
       - name: Install upstream PocketJS dependencies
         working-directory: pocketjs-upstream
         run: bun install --frozen-lockfile
-      - name: Build live pokshelld for PocketJS host service test
-        run: cargo build --manifest-path rust/Cargo.toml --locked --bin pokshelld
+      - name: Build Rust session and game daemon for PocketJS integration
+        run: cargo build --manifest-path rust/Cargo.toml --workspace --locked
+      - name: Build layer-shell menu for PocketJS lifecycle verification
+        run: cargo build --manifest-path graphics/wayland-layer/Cargo.toml
+
       - name: Install software headless Wayland compositor for native PocketJS XDG
         run: |
           sudo apt-get update -qq

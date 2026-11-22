@@ -39,3 +39,4 @@ POCKETJS_PROFILE_RS="$PWD/.pocket-build/pokshell-ci-profile/pocket_profile.rs" \
   cargo test --manifest-path programs/linux-kms/Cargo.toml --bin pocket-linux-kms
 python3 "$ROOT/tools/test-pocketjs-service.py" "$UPSTREAM"
 python3 "$ROOT/tools/test-pocketjs-wayland.py" "$UPSTREAM"
+python3 "$ROOT/tools/test-pocketjs-session.py" "$UPSTREAM"
