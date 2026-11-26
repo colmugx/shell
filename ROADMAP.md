@@ -55,9 +55,11 @@ specific host or pinning upstream revisions.
    game; input suppression must be proven to avoid double-activating a game.
 4. Game launch/stop/restart, controller hotplug, crash and suspend/resume must
    be bounded, safe and recoverable. No UI-supplied arbitrary privileged shell.
-5. Low/Mid/High hardware tiers are *validation targets*, not claims of support:
-   H700-class RG35XX H/RG40XX H; QCS6125-class device; Retroid Pocket 6.
-   Keep board GPU/driver and licensing constraints explicit.
+5. Four hardware tiers are *validation targets*, not claims of support:
+   High (RP6/Nova); Upper-mid A78 (RG55G1/provisional RG47G1); Mid A73
+   (Duo Lite/Air X); Low 1 GB (RG35XX H/RG40XX H/RG CubeXX/RG DS Plus).
+   See [hardware baselines](docs/hardware-baselines.md). Keep board GPU/driver,
+   licensing and power/thermal acceptance constraints explicit. Steam is optional.
 6. Preserve kernel/Mesa/SDL/Proton/Libretro compatibility. Prefer existing
    working upstream stacks over reimplementing emulation/graphics drivers.
 7. CI software headless ≠ DRM scanout ≠ UTM VirtIO ≠ real handheld. Never

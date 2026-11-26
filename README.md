@@ -5,7 +5,7 @@
 
 Game-first native Linux console-session research. **Not a completed Linux distribution.**
 
-**Three reference platforms:** RG35XX H / RG40XX H (or H700-class equivalent), Retroid Pocket Duo Lite (QCS6125), Retroid Pocket 6. [Hardware baselines](docs/hardware-baselines.md).
+**Four reference hardware tiers:** High — Retroid Pocket 6 / Nova; Upper-mid — G1 Gen 2 (RG55G1 / provisional RG47G1); Mid — Retroid Pocket Duo Lite / MANGMI Air X; Low — RG35XX H / RG40XX H / RG CubeXX / RG DS Plus. [Hardware baselines](docs/hardware-baselines.md).
 
 ## Approach
 
